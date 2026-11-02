@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "http://127.0.0.1:8787/schema/stage.schema.json",
+  "title": "大肥鱼引擎口播与舞台指令",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "lines": {
+      "type": "array",
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/line" }
+    },
+    "say": { "type": ["string", "array"] },
+    "mood": { "type": "string" },
+    "motion": { "type": "string", "description": "模型目录里的动作组名，见 /api/stage 的 motions" },
+    "expression": { "type": "string", "description": "模型目录里的表情名，见 /api/stage 的 expressions" },
+    "vibe": { "type": "string" },
+    "stage": { "$ref": "#/$defs/stage" }
+  },
+  "$defs": {
+    "line": {
+      "type": "object",
+      "required": ["say"],
+      "properties": {
+        "say": { "type": "string" },
+        "mood": { "type": "string" },
+        "motion": { "type": "string" },
+        "expression": { "type": "string" },
+        "vibe": { "type": "string" },
+        "cues": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "properties": {
+              "at": { "type": "number", "minimum": 0, "maximum": 1 },
+              "act": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "stage": {
+      "type": "object",
+      "description": "只有页面打开「自由操控」时才会执行",
+      "properties": {
+        "mode": { "enum": ["live", "pet"] },
+        "model": {
+          "type": "object",
+          "properties": {
+            "x": { "type": "number", "minimum": -2000, "maximum": 2000 },
+            "y": { "type": "number", "minimum": -2000, "maximum": 2000 },
+            "scale": { "type": "number", "minimum": 0.25, "maximum": 4 }
+          }
+        },
+        "background": {
+          "type": "object",
+          "properties": {
+            "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$" },
+            "imageOpacity": { "type": "number", "minimum": 0, "maximum": 1 },
+            "imageScale": { "type": "number", "minimum": 0.2, "maximum": 3 }
+          }
+        },
+        "widgets": {
+          "type": "object",
+          "properties": {
+            "hud": { "$ref": "#/$defs/widget" },
+            "danmaku": { "$ref": "#/$defs/widget" }
+          }
+        },
+        "toggles": {
+          "type": "object",
+          "properties": {
+            "hud": { "type": "boolean" },
+            "danmaku": { "type": "boolean" },
+            "physics": { "type": "boolean" },
+            "breath": { "type": "boolean" },
+            "sway": { "type": "boolean" },
+            "blink": { "type": "boolean" },
+            "mouse": { "type": "boolean" },
+            "live": { "type": "boolean" },
+            "captions": { "type": "boolean" }
+          }
+        },
+        "css": { "type": "string", "maxLength": 6000 }
+      }
+    },
+    "widget": {
+      "type": "object",
+      "properties": {
+        "show": { "type": "boolean" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "scale": { "type": "number", "minimum": 0.6, "maximum": 2 },
+        "z": { "type": "number", "minimum": 1, "maximum": 40 },
+        "style": { "enum": ["jrpg", "action", "moba", "pixel"] },
+        "count": { "type": "integer", "minimum": 1, "maximum": 20 }
+      }
+    }
+  }
+}

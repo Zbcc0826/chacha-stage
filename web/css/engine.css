@@ -1,0 +1,105 @@
+/* 直播背景、桌宠和自由操控。字段说明见 /schema/engine.md。 */
+
+#stage-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 100% auto;
+}
+
+.mode-switch { display: flex; gap: 6px; }
+.mode-switch button { padding: 6px 10px; cursor: pointer; }
+.mode-switch button[aria-pressed="true"] {
+  background: var(--tea);
+  border-color: var(--tea);
+  color: #fff;
+}
+
+#backdrop, #dsh-link, #clips, #freedom, #credits {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+#backdrop h3, #dsh-link h3, #clips h3, #freedom h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--tea-2);
+}
+.swatches { display: flex; flex-wrap: wrap; gap: 6px; }
+.swatches button {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.bg-row, .free-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 6px;
+}
+.bg-row label, .free-row label, .clip-label {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+#freedom-panel { margin-top: 8px; }
+#freedom-panel[hidden] { display: none; }
+#user-css, #dsh-home {
+  width: 100%;
+  margin-top: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+#user-css {
+  min-height: 72px;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+}
+#dsh-home { padding: 6px 8px; }
+#clips-motions, #clips-faces { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+#credits { color: var(--muted); font-size: 12px; line-height: 1.55; }
+#credits a { color: var(--tea-2); }
+#hud-z, #dm-z {
+  width: 76px;
+  background: transparent;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  padding: 2px 4px;
+}
+
+body.mode-pet,
+body.mode-pet #app,
+body.mode-pet #stage { background: transparent; }
+body.mode-pet #app { grid-template-rows: 1fr; }
+body.mode-pet #top,
+body.mode-pet #caption,
+body.mode-pet #hud-rail,
+body.mode-pet #backdrop,
+body.mode-pet #stage-bg { display: none; }
+body.mode-pet main { grid-template-columns: 1fr; }
+body.mode-pet #stage-frame { grid-template-columns: 1fr; }
+body.mode-pet #dock { display: none; }
+body.mode-pet.pet-open #dock {
+  display: flex;
+  position: fixed;
+  right: 12px;
+  top: 12px;
+  width: min(400px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  z-index: 8;
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+body.hide-caption #caption { display: none; }
+body.mode-pet #pet-only { display: flex; }
+#pet-only { display: none; margin-top: 8px; }

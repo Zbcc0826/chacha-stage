@@ -1,0 +1,15 @@
+keys
+bili.local
+dsh.local
+.env
+.env.*
+github-key.txt
+audio/
+browser-profile/
+models/
+.harness-channel
+.harness-session
+.vibe
+__pycache__/
+*.pyc
+_extract_model.py

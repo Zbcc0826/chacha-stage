@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>大肥鱼 · 虚拟主播与桌宠</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="app">
+    <header id="top">
+      <div class="brand">
+        <span class="mark" id="model-mark">鱼</span>
+        <div>
+          <strong id="model-name">大肥鱼</strong>
+          <em>虚拟主播 / 桌宠引擎</em>
+        </div>
+      </div>
+      <div class="mode-switch" role="group" aria-label="舞台模式">
+        <button type="button" id="mode-live" aria-pressed="true">直播间</button>
+        <button type="button" id="mode-pet" aria-pressed="false">桌宠</button>
+      </div>
+      <select id="model-pick" aria-label="选择模型"></select>
+      <div id="status">正在加载模型…</div>
+      <div id="llm" class="pill">DeepSeek …</div>
+    </header>
+    <main>
+      <div id="stage-column">
+        <div id="stage-frame">
+          <aside id="hud-rail" aria-label="状态栏">
+            <label class="check hud-switch"><input id="hud-show" type="checkbox" checked /> 状态栏</label>
+            <label class="hud-field">样式
+              <select id="hud-style" aria-label="状态栏样式">
+                <option value="jrpg">日式</option>
+                <option value="action">动作</option>
+                <option value="moba">对战</option>
+                <option value="pixel">像素</option>
+              </select>
+            </label>
+            <label class="hud-field">缩放
+              <input id="hud-scale" type="range" min="0.6" max="2" step="0.05" value="1" />
+            </label>
+            <label class="hud-field">血条层
+              <input id="hud-z" type="number" min="1" max="40" step="1" value="3" aria-label="血条遮挡层" />
+            </label>
+            <label class="check hud-switch"><input id="dm-show" type="checkbox" checked /> 弹幕姬</label>
+            <label class="hud-field">条数
+              <input id="dm-count" type="number" min="1" max="20" step="1" value="5" aria-label="弹幕显示条数" />
+            </label>
+            <label class="hud-field">弹幕
+              <input id="dm-scale" type="range" min="0.6" max="2" step="0.05" value="1" aria-label="弹幕缩放" />
+            </label>
+            <label class="hud-field">弹幕层
+              <input id="dm-z" type="number" min="1" max="40" step="1" value="4" aria-label="弹幕遮挡层" />
+            </label>
+            <label class="hud-field">数值
+              <select id="hud-nums" aria-label="状态数值">
+                <option value="hover">悬停</option>
+                <option value="always">常显</option>
+              </select>
+            </label>
+          </aside>
+          <section id="stage" aria-label="模型舞台">
+            <div id="stage-bg"></div>
+            <div id="hud" class="hud style-jrpg" role="group" aria-label="血条蓝条">
+              <div class="meter hp" title="余额，100 元满血">
+                <i></i>
+                <b>HP</b>
+                <em class="val"></em>
+              </div>
+              <div class="meter mp" title="上下文余量，压缩后回蓝">
+                <i></i>
+                <b>MP</b>
+                <em class="val"></em>
+              </div>
+            </div>
+            <div id="danmaku-layer" aria-label="弹幕">
+              <div class="dm-grip">弹幕</div>
+              <div id="danmaku-list"></div>
+            </div>
+          </section>
+        </div>
+        <div id="caption">
+          <p id="cue"></p>
+          <p id="subtitle"></p>
+          <p id="stage-hint">滚轮缩放 · 拖拽平移 · 桌宠模式点角色打开控件</p>
+        </div>
+      </div>
+      <aside id="dock">
+        <section id="dsh-link">
+          <h3>连接 dsh</h3>
+          <p class="voice-hint" id="dsh-hint">口播和血条都走你自己的 DeepSeek Harness。密钥不要填到这个页面。</p>
+          <input id="dsh-home" type="text" spellcheck="false" aria-label="dsh 主目录" />
+          <div class="row-actions">
+            <button type="button" id="btn-dsh">保存目录</button>
+          </div>
+        </section>
+        <section id="backdrop">
+          <h3>直播间背景</h3>
+          <div id="bg-swatches" class="swatches"></div>
+          <div class="bg-row">
+            <label>色盘 <input id="bg-color" type="color" value="#ff00ff" /></label>
+            <label>图片 <input id="bg-file" type="file" accept="image/*" /></label>
+          </div>
+          <div class="bg-row">
+            <label>尺寸 <input id="bg-scale" type="range" min="0.2" max="3" step="0.05" value="1" /></label>
+            <label>透明度 <input id="bg-opacity" type="range" min="0" max="1" step="0.05" value="1" /></label>
+            <button type="button" id="bg-clear">去掉图片</button>
+          </div>
+        </section>
+        <section id="talk">
+          <textarea id="talk-text" rows="3" placeholder="输入一句。也可以写标签：&lt;shy&gt;&lt;nod&gt;你好呀">&lt;shy&gt;&lt;nod&gt;你好呀，今天天气真好。</textarea>
+          <div class="voice-row">
+            <select id="talk-voice" aria-label="音色"></select>
+            <label class="voice-slider">音高
+              <input id="talk-pitch" type="range" min="-12" max="20" step="1" value="-7" />
+              <span id="talk-pitch-val">-7</span>
+            </label>
+            <label class="voice-slider">语速
+              <input id="talk-rate" type="range" min="-20" max="30" step="1" value="-5" />
+              <span id="talk-rate-val">-5%</span>
+            </label>
+          </div>
+          <p class="voice-hint">在这些在线嗓音上调音高和语速。换不成自己录的声音。</p>
+          <div class="row-actions">
+            <select id="talk-lang" aria-label="口播语言">
+              <option value="auto">自动语言</option>
+              <option value="zh">中文</option>
+              <option value="ja">日语</option>
+              <option value="en">英语</option>
+            </select>
+            <button type="button" id="btn-speak">直接说</button>
+          </div>
+          <div class="ask-box">
+            <p class="ask-label">发给你的 dsh。回复可以有好几句，会按顺序说出来。</p>
+            <label class="check"><input id="opt-live" type="checkbox" checked /> 接弹幕</label>
+            <p id="danmaku-state" class="voice-hint"></p>
+            <div class="ask-row">
+              <textarea id="ask-text" rows="2" placeholder="输入想让角色回应的话，回车发送"></textarea>
+              <button type="button" id="btn-ask">发送</button>
+            </div>
+          </div>
+        </section>
+        <div class="tools">
+          <input id="search" type="search" placeholder="搜索参数名或 ID" autocomplete="off" />
+          <label class="check"><input id="only-locked" type="checkbox" /> 只看锁定</label>
+          <div class="toggles" id="toggles">
+            <label class="check"><input id="opt-physics" type="checkbox" checked /> 物理</label>
+            <label class="check"><input id="opt-breath" type="checkbox" checked /> 呼吸</label>
+            <label class="check"><input id="opt-sway" type="checkbox" /> 摆头</label>
+            <label class="check"><input id="opt-blink" type="checkbox" /> 眨眼</label>
+            <label class="check"><input id="opt-mouse" type="checkbox" /> 鼠标注视</label>
+            <label class="check" id="ahoge-toggle"><input id="opt-ahoge" type="checkbox" checked /> 呆毛旋转</label>
+          </div>
+          <div class="row-actions">
+            <button type="button" id="btn-reset">恢复默认</button>
+            <button type="button" id="btn-copy">复制锁定姿态</button>
+            <button type="button" id="btn-catalog">复制参数表</button>
+          </div>
+          <div id="presets" class="presets"></div>
+          <p class="clip-label">模型自带</p>
+          <div id="clips-motions"></div>
+          <div id="clips-faces"></div>
+        </div>
+        <section id="freedom">
+          <label class="check"><input id="opt-freedom" type="checkbox" /> 自由操控</label>
+          <p class="voice-hint">打开后，dsh 可以用 stage 指令改角色位置、缩放、这些开关、控件位置和一段本页 CSS。关掉后，这类指令会被丢掉。</p>
+          <div id="pet-only">
+            <button type="button" id="btn-back-live">回到直播间</button>
+            <label class="free-row">桌宠大小
+              <input id="pet-scale" type="range" min="0.25" max="4" step="0.05" value="1" />
+            </label>
+          </div>
+          <div id="freedom-panel" hidden>
+            <div id="freedom-toggles" class="toggles"></div>
+            <div class="free-row">
+              <label>角色 X <input id="free-x" type="number" step="10" value="0" /></label>
+              <label>角色 Y <input id="free-y" type="number" step="10" value="0" /></label>
+              <label>缩放 <input id="free-scale" type="number" min="0.25" max="4" step="0.05" value="1" /></label>
+            </div>
+            <label class="clip-label" for="user-css">本页 CSS</label>
+            <textarea id="user-css" rows="4" spellcheck="false" placeholder="只写样式。例如 #subtitle { color: #fff; }"></textarea>
+          </div>
+        </section>
+        <div id="groups"></div>
+        <p id="dock-note">表情和短动作按每一句来。模型目录里的动作、表情会列在上面，也会写进口播指令。放松、侧耳这类整体动态叫 vibe，会留到下一轮。</p>
+        <p id="credits">软件作者：<a href="https://space.bilibili.com/3382868" target="_blank" rel="noreferrer">早坂茶茶Unofficial</a>。模型：大肥鱼，原画 <a href="https://space.bilibili.com/13737731" target="_blank" rel="noreferrer">神宫凉子</a>，建模 霓虹猫_NeonNeko。向开源社区致敬。</p>
+      </aside>
+    </main>
+  </div>
+  <div id="toast" hidden></div>
+  <div id="error" hidden></div>
+  <script src="/vendor/live2dcubismcore.min.js"></script>
+  <script src="/vendor/pixi.min.js"></script>
+  <script src="/vendor/cubism4.min.js"></script>
+  <script src="/app.js"></script>
+  <script src="/engine.js"></script>
+</body>
+</html>

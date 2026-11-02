@@ -1,0 +1,72 @@
+/* 血条蓝条只有条子本身，不铺底。数值默认悬停才出现。 */
+#hud {
+  position: absolute;
+  left: 16px;
+  top: 16px;
+  z-index: 3;
+  touch-action: none;
+  cursor: grab;
+  transform-origin: top left;
+  background: none;
+  padding: 0;
+}
+#hud.is-hidden { display: none; }
+#hud .meter {
+  position: relative;
+  width: 176px;
+  height: 14px;
+  margin: 0 0 4px;
+  overflow: visible;
+  background: transparent;
+}
+#hud .meter i { display: block; width: 0%; height: 100%; }
+#hud .meter b {
+  position: absolute;
+  left: 4px;
+  top: 0;
+  font-size: 10px;
+  line-height: 14px;
+  color: #fff;
+  text-shadow: -1px 0 #000, 1px 0 #000, 0 -1px #000, 0 1px #000;
+  pointer-events: none;
+}
+#hud .val {
+  display: none;
+  position: absolute;
+  left: calc(100% + 6px);
+  top: 0;
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 14px;
+  color: #fff;
+  text-shadow: -1px 0 #000, 1px 0 #000, 0 -1px #000, 0 1px #000;
+  pointer-events: none;
+  white-space: nowrap;
+}
+#hud.show-values .val,
+#hud:hover .val { display: block; }
+.hud.style-jrpg .hp { height: 14px; border: 1px solid #e6c36a; }
+.hud.style-jrpg .mp { height: 9px; border: 1px solid #8fd0ff; }
+.hud.style-jrpg .hp i { background: linear-gradient(#ffb4a8, #e23b3b 55%, #8e1515); }
+.hud.style-jrpg .mp i { background: linear-gradient(#d7f4ff, #3aa0e8 55%, #1a4f86); }
+.hud.style-jrpg .mp b, .hud.style-jrpg .mp .val { line-height: 9px; font-size: 9px; }
+.hud.style-action .meter { width: 210px; height: 8px; transform: skewX(-16deg); border-left: 2px solid #fff; }
+.hud.style-action .hp { border-bottom: 1px solid rgba(255, 255, 255, 0.8); }
+.hud.style-action .mp { border-bottom: 1px solid rgba(255, 255, 255, 0.55); }
+.hud.style-action .hp i { background: #ff2d2d; }
+.hud.style-action .mp i { background: #2ec5ff; }
+.hud.style-action .meter b, .hud.style-action .val { transform: skewX(16deg); line-height: 8px; }
+.hud.style-moba .meter { width: 188px; border-radius: 8px; }
+.hud.style-moba .hp { height: 16px; border: 2px solid #f2f2f2; }
+.hud.style-moba .mp { height: 12px; border: 2px solid #d7ecff; border-radius: 6px; }
+.hud.style-moba .hp i { background: linear-gradient(#ff8d8d, #d12525); border-radius: 6px; }
+.hud.style-moba .mp i { background: linear-gradient(#9ad7ff, #1d6fd6); border-radius: 4px; }
+.hud.style-moba .hp b, .hud.style-moba .hp .val { line-height: 16px; }
+.hud.style-moba .mp b, .hud.style-moba .mp .val { line-height: 12px; }
+.hud.style-pixel .meter { width: 160px; }
+.hud.style-pixel .hp { height: 16px; border: 2px solid #fff; }
+.hud.style-pixel .mp { height: 12px; border: 2px solid #fff; }
+.hud.style-pixel .hp i { background: repeating-linear-gradient(90deg, #ff3b3b 0 8px, #b41d1d 8px 10px); }
+.hud.style-pixel .mp i { background: repeating-linear-gradient(90deg, #3b7bff 0 8px, #1d46b4 8px 10px); }
+.hud.style-pixel .meter b, .hud.style-pixel .val { font-family: Consolas, monospace; }
