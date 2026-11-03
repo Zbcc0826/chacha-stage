@@ -1,6 +1,6 @@
 # chacha-stage
 
-可由 DeepSeek Harness 调用的虚拟主播和桌宠引擎。直播间模式用来推流，桌宠模式只留角色，点在角色身上才弹出控件。
+可由 DeepSeek Harness 调用的虚拟主播和桌宠引擎。包含一个简易的直播间模式和桌宠模式。
 
 软件作者：[早坂茶茶Unofficial](https://space.bilibili.com/3382868)。向开源社区致敬。
 
@@ -14,7 +14,7 @@ Live2D Cubism Core 随运行时放在 `vendor/live2dcubismcore.min.js`，属于 
 
 ## 密钥
 
-口播和血条使用你自己的密钥。在直播间「连接 dsh」里填写，引擎会把它写进 dsh 主目录的 `.env`。也可以自己设置环境变量 `DEEPSEEK_API_KEY`。不要把密钥写进这个仓库，也不要提交 `keys`、`bili.local`、`dsh.local`。
+口播和血条使用你自己的DeepSeek密钥。在直播间「连接 dsh」里填写，引擎会把它写进 dsh 主目录的 `.env`。也可以自己设置环境变量 `DEEPSEEK_API_KEY`。跟你的dsh说需求，它会做好的。血条可能需要在服务内填一次apikey以跟踪api余额。
 
 ## 运行
 
@@ -25,4 +25,4 @@ python server.py
 
 打开 `http://127.0.0.1:8787/`。给 dsh 改舞台和样式的格式在 `http://127.0.0.1:8787/schema/engine.md`。
 
-自由操控打开后，口播 JSON 可以带 `stage`，用来改角色位置、缩放、开关、控件位置、遮挡层和一段本页 CSS。关掉后这些指令会被丢掉。
+自由操控打开后，口播 JSON 可以带 `stage`，用来改角色位置、缩放、开关、控件位置、遮挡层和一段本页 CSS。关掉后这些指令会被丢掉。大部分样式和效果都可以让dsh或其他ai助手进行管理和自定义。
