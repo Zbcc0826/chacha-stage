@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import atexit
 import ctypes
+import json
 import os
 import sys
 from pathlib import Path
@@ -379,15 +380,27 @@ def _install_hook():
         except Exception as exc:
             print("透明样式失败 %s" % exc, flush=True)
         original(self, form, window, cache_dir)
+        try:
+            # 桌宠经常不在前台。关掉后台节流，口型和动作才会跟着声音走。
+            props = self.webview.CreationProperties
+            extra = " --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows"
+            current = props.AdditionalBrowserArguments or ""
+            if extra.strip() not in current:
+                props.AdditionalBrowserArguments = current + extra
+        except Exception as exc:
+            print("后台节流 %s" % exc, flush=True)
         _allow_microphone(self)
 
     hooked._chacha_hooked = True
     edgechromium.EdgeChrome.__init__ = hooked
 
 
-# 按住说话的全局按键。只判断这组键是否都按下，不记录其他按键。
+# 按住说话的全局按键。平时只看已经登记的组合是否都按下。
+# 正在登记新按键时，才把按下的键名交给页面，仍然不拦截、不写日志。
 _TALK_KEYS = []
 _TALK_DOWN = False
+_TALK_CAPTURE = False
+_TALK_SEEN = set()
 _TALK_HOOK = None
 _TALK_HOOK_PROC = None
 _VK_NAMES = {
@@ -428,6 +441,44 @@ def _vk_of(name):
     return ()
 
 
+def _name_of_vk(vk):
+    """低级键盘钩子里的虚拟键码，换成和直播间页面相同的键名。"""
+    vk = int(vk)
+    named = {
+        0x11: "Control", 0xA2: "Control", 0xA3: "Control",
+        0x10: "Shift", 0xA0: "Shift", 0xA1: "Shift",
+        0x12: "Alt", 0xA4: "Alt", 0xA5: "Alt",
+        0x5B: "Meta", 0x5C: "Meta",
+        0x20: "Space",
+        0x0D: "Enter",
+        0x09: "Tab",
+        0x1B: "Escape",
+        0x08: "Backspace",
+        0x2E: "Delete",
+        0x25: "ArrowLeft",
+        0x26: "ArrowUp",
+        0x27: "ArrowRight",
+        0x28: "ArrowDown",
+    }
+    if vk in named:
+        return named[vk]
+    if 0x70 <= vk <= 0x7B:
+        return "F%d" % (vk - 0x6F)
+    if 0x41 <= vk <= 0x5A or 0x30 <= vk <= 0x39:
+        return chr(vk)
+    return ""
+
+
+def _vk_from_hook(lparam):
+    """从低级键盘钩子的参数里取出虚拟键码。"""
+    if not lparam:
+        return 0
+    try:
+        return int(ctypes.cast(lparam, ctypes.POINTER(ctypes.c_uint)).contents.value)
+    except (ValueError, TypeError, ctypes.ArgumentError):
+        return 0
+
+
 def _talk_key_down(name):
     codes = _vk_of(name)
     if not codes:
@@ -450,7 +501,7 @@ def _normalize_talk_keys(text):
     return keys
 
 
-def _notify_talk(window, held):
+def _notify_page(window, script):
     """回到界面线程再通知页面。键盘钩子里不能直接调网页。"""
     native = getattr(window, "native", None)
     if native is None:
@@ -458,12 +509,25 @@ def _notify_talk(window, held):
 
     def apply():
         try:
-            window.evaluate_js("window.micHold&&window.micHold(%s)" % ("true" if held else "false"))
+            window.evaluate_js(script)
         except Exception as exc:
             print("按键说话 %s" % exc, flush=True)
 
     from System import Action
     native.BeginInvoke(Action(apply))
+
+
+def _notify_talk(window, held):
+    _notify_page(window, "window.micHold&&window.micHold(%s)" % ("true" if held else "false"))
+
+
+def _notify_capture(window, name, down):
+    """登记快捷键时，把键名交给和直播间相同的记录函数。"""
+    script = "window.micCaptureKey&&window.micCaptureKey(%s,%s)" % (
+        json.dumps(name, ensure_ascii=True),
+        "true" if down else "false",
+    )
+    _notify_page(window, script)
 
 
 def _install_talk_hook(window, names):
@@ -480,7 +544,7 @@ def _install_talk_hook(window, names):
 
     def proc(code, wparam, lparam):
         try:
-            _on_talk_key(window, code, int(wparam))
+            _on_talk_key(window, code, int(wparam), lparam)
         except Exception as exc:
             print("按键钩子 %s" % exc, flush=True)
         return user.CallNextHookEx(None, code, wparam, lparam)
@@ -499,9 +563,22 @@ def _talk_combo_down():
     return bool(_TALK_KEYS) and all(_talk_key_down(name) for name in _TALK_KEYS)
 
 
-def _on_talk_key(window, code, wparam):
+def _on_talk_key(window, code, wparam, lparam):
     global _TALK_DOWN
     if code < 0 or wparam not in (0x0100, 0x0101, 0x0104, 0x0105):
+        return
+    if _TALK_CAPTURE:
+        name = _name_of_vk(_vk_from_hook(lparam))
+        down = wparam in (0x0100, 0x0104)
+        if not name:
+            return
+        if down:
+            if name in _TALK_SEEN:
+                return
+            _TALK_SEEN.add(name)
+        else:
+            _TALK_SEEN.discard(name)
+        _notify_capture(window, name, down)
         return
     held = _talk_combo_down()
     if held and not _TALK_DOWN:
@@ -589,6 +666,25 @@ class PetApi:
 
         def apply():
             _install_talk_hook(window, names)
+
+        self._ui(apply)
+        return True
+
+    def set_talk_capture(self, enabled):
+        """开始或结束登记快捷键。登记时不要求窗口在前台。"""
+        if isinstance(enabled, str):
+            flag = enabled.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            flag = bool(enabled)
+        window = self._window
+
+        def apply():
+            global _TALK_CAPTURE
+            _TALK_CAPTURE = flag
+            if not flag:
+                _TALK_SEEN.clear()
+            if window is not None:
+                _install_talk_hook(window, _TALK_KEYS)
 
         self._ui(apply)
         return True

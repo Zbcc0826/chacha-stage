@@ -185,6 +185,8 @@ function bindToggles() {
   $("search").addEventListener("input", applyFilter);
   $("only-locked").addEventListener("change", applyFilter);
   $("btn-reset").addEventListener("click", resetAll);
+  const reload = $("btn-reload");
+  if (reload) reload.addEventListener("click", () => { reloadModel().catch(showError); });
   $("btn-copy").addEventListener("click", () => copyText(poseJson()));
   $("btn-catalog").addEventListener("click", () => copyText(catalogText()));
 }
@@ -287,9 +289,15 @@ function buildParams(labels) {
     item.value = item.def;
     rows.push(item);
     byId.set(id, item);
-    if (id === "Param38") ahoge = item;
   }
   params = rows;
+  // 呆毛旋转只认参数名里带呆毛的模型。大肥鱼的 Param38 是手部开关，不是呆毛。
+  ahoge = null;
+  for (const item of rows) {
+    if (!/呆毛|ahoge/i.test(item.name || "")) continue;
+    ahoge = item;
+    if (/旋|转/.test(item.name || "")) break;
+  }
   return rows;
 }
 
@@ -534,7 +542,10 @@ function releaseModel() {
 }
 
 /** 换成另一套模型，并按它自己的 cdi 重画参数表。 */
-async function showModel(modelId) {
+async function showModel(modelId, options) {
+  const keepView = !!(options && options.keepView);
+  // 重新加载时先记下位置和缩放，新模型摆完再放回去。
+  const kept = keepView && window.stage && window.stage.getView ? window.stage.getView() : null;
   stopSpeech();
   const info = catalog.find((item) => item.id === modelId);
   if (!info || !info.ready) throw new Error("模型不可用");
@@ -556,9 +567,11 @@ async function showModel(modelId) {
   }
   releaseModel();
   clearPoseState();
-  zoom = 1;
-  panX = 0;
-  panY = 0;
+  if (!keepView) {
+    zoom = 1;
+    panX = 0;
+    panY = 0;
+  }
   model = next;
   app.stage.addChild(model);
   hookModel();
@@ -568,6 +581,7 @@ async function showModel(modelId) {
   window.stageModel = model;
   model.eventMode = "static";
   window.dispatchEvent(new CustomEvent("stage-model"));
+  if (kept && window.stage && window.stage.setView) window.stage.setView(kept.zoom, kept.x, kept.y);
   $("ahoge-toggle").hidden = !ahoge;
   refreshPresetVisibility();
   $("status").textContent = info.name + " 已加载 · 参数 " + params.length;
@@ -581,7 +595,24 @@ function refreshPresetVisibility() {
       button.hidden = false;
       continue;
     }
+    if (preset[0] === "旋风呆毛") {
+      button.hidden = !ahoge;
+      continue;
+    }
     button.hidden = !Object.keys(preset[1]).some((id) => byId.has(id));
+  }
+}
+
+/** 丢掉当前表情、动作和锁定，重新载入同一套模型。位置和缩放保持不动。 */
+async function reloadModel() {
+  if (!currentModel) return;
+  const button = $("btn-reload");
+  if (button) button.disabled = true;
+  try {
+    await showModel(currentModel.id, { keepView: true });
+    $("status").textContent = currentModel.name + " 已回到默认状态";
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 
@@ -721,6 +752,8 @@ const speech = {
   token: 0,
   history: [],
   busy: false,
+  actId: 0,
+  seenActs: new Set(),
   notice: "",
   // 没说完的时候，新生成的话只排队，不能一起开口。
   live: true,
@@ -1048,7 +1081,38 @@ function beginPerformance(data) {
 }
 
 function playPerformance(data) {
+  deliverSpeech(data);
+}
+
+function petIsShowing() {
+  if (window.chachaDesktopPet) return false;
+  const button = $("mode-pet");
+  return !!(button && button.getAttribute("aria-pressed") === "true");
+}
+
+/** 同一轮口播只播一次。桌宠开着时，嘴型、动作和声音只在桌宠窗口播。 */
+function deliverSpeech(data) {
+  if (!data || data.idle) return;
+  if (data.actId != null) {
+    const id = Number(data.actId);
+    if (speech.seenActs.has(id)) return;
+    speech.seenActs.add(id);
+    speech.actId = id;
+  }
+  if (!window.chachaDesktopPet && petIsShowing()) return;
   enqueueSpeech(data);
+}
+
+if (window.chachaDesktopPet) {
+  window.setInterval(() => {
+    if (speech.cueBusy) return;
+    speech.cueBusy = true;
+    fetch("/api/cue?after=" + (speech.actId || 0))
+      .then((response) => response.json())
+      .then((data) => deliverSpeech(data))
+      .catch(() => {})
+      .finally(() => { speech.cueBusy = false; });
+  }, 400);
 }
 
 /** 播队列里的一句。说完再叫下一句，表情从上一句的脸上缓过去。 */
@@ -1249,8 +1313,7 @@ async function armLive() {
     showDanmaku(data.danmaku);
     if (data.idle) return;
     rememberTurn(data);
-    speech.queue.push(data);
-    pumpSpeech();
+    deliverSpeech(data);
   } catch (error) {
     const message = error.message || "弹幕没接上";
     if (speech.liveError !== message) {
@@ -1377,22 +1440,28 @@ function paintMicKey() {
   if (clear) clear.disabled = mic.capturing || !mic.hold.length;
 }
 
-/** 把按键交给桌宠进程。浮窗不在前台时，页面自己收不到键盘。 */
-function syncPetTalkKey() {
+/** 调桌宠窗口上的接口。页面刚打开时接口可能还没挂上，等它就绪再补一次。 */
+function callPetApi(method, arg) {
   if (!window.chachaDesktopPet) return;
   const send = () => {
     const api = window.pywebview && window.pywebview.api;
-    if (!api || !api.set_talk_key) return false;
-    const active = mic.want && !mic.capturing ? mic.hold.join(",") : "";
-    api.set_talk_key(active);
+    if (!api || typeof api[method] !== "function") return false;
+    api[method](arg);
     return true;
   };
-  if (send() || mic.petKeyWait) return;
-  mic.petKeyWait = true;
-  window.addEventListener("pywebviewready", () => {
-    mic.petKeyWait = false;
-    send();
-  }, { once: true });
+  if (send()) return;
+  window.addEventListener("pywebviewready", send, { once: true });
+}
+
+/** 把按键交给桌宠进程。浮窗不在前台时，页面自己收不到键盘。 */
+function syncPetTalkKey() {
+  const active = mic.want && !mic.capturing ? mic.hold.join(",") : "";
+  callPetApi("set_talk_key", active);
+}
+
+/** 登记快捷键时让桌宠全局钩子把键名送回来，规则和直播间页面一致。 */
+function syncPetCapture(on) {
+  callPetApi("set_talk_capture", !!on);
 }
 
 function recognitionLang() {
@@ -1685,6 +1754,7 @@ function cancelMicCapture() {
   mic.captureDown = [];
   mic.capturePeak = [];
   paintMicKey();
+  syncPetCapture(false);
   syncPetTalkKey();
   if (mic.want) setMicHint(holdHint());
   else setMicHint(micOffHint());
@@ -1701,14 +1771,35 @@ function beginMicCapture() {
   stopRecognition();
   paintMicKey();
   syncPetTalkKey();
+  syncPetCapture(true);
   setMicHint("按下要使用的按键，松开后保存。最多两个键。按 Esc 取消。");
 }
+
+/** 直播间和桌宠共用这一套：按下记入组合，全部松开后保存，单独 Esc 取消。 */
+function noteCaptureKey(name, down) {
+  if (!mic.capturing || !validHoldKey(name)) return;
+  if (down) {
+    if (mic.captureDown.includes(name)) return;
+    if (mic.capturePeak.length >= 2) return;
+    mic.captureDown.push(name);
+    mic.capturePeak.push(name);
+    setMicHint("已按下 " + formatHold(mic.capturePeak) + "。松开后保存，Esc 取消。");
+    return;
+  }
+  mic.captureDown = mic.captureDown.filter((key) => key !== name);
+  if (!mic.captureDown.length && mic.capturePeak.length) finishMicCapture();
+}
+
+window.micCaptureKey = (name, down) => {
+  noteCaptureKey(String(name || ""), !!down);
+};
 
 function finishMicCapture() {
   const keys = mic.capturePeak.slice(0, 2);
   mic.capturing = false;
   mic.captureDown = [];
   mic.capturePeak = [];
+  syncPetCapture(false);
   if (keys.length === 1 && keys[0] === "Escape") {
     paintMicKey();
     syncPetTalkKey();
@@ -1729,10 +1820,8 @@ function onMicKeyDown(event) {
   if (mic.capturing) {
     event.preventDefault();
     event.stopPropagation();
-    if (event.repeat || mic.captureDown.includes(name)) return;
-    if (mic.capturePeak.length >= 2) return;
-    mic.captureDown.push(name);
-    mic.capturePeak.push(name);
+    if (event.repeat) return;
+    noteCaptureKey(name, true);
     return;
   }
   if (!mic.hold.length) return;
@@ -1749,8 +1838,7 @@ function onMicKeyUp(event) {
   if (!name) return;
   if (mic.capturing) {
     event.preventDefault();
-    mic.captureDown = mic.captureDown.filter((key) => key !== name);
-    if (!mic.captureDown.length && mic.capturePeak.length) finishMicCapture();
+    noteCaptureKey(name, false);
     return;
   }
   if (!mic.pageHeld.has(name)) return;
@@ -1815,8 +1903,24 @@ function bindMic() {
   window.addEventListener("keyup", onMicKeyUp, true);
   window.addEventListener("blur", () => {
     mic.pageHeld.clear();
+    // 桌宠经常不在前台，失焦不能把正在登记的按键清掉。
+    if (window.chachaDesktopPet) return;
     if (mic.capturing) cancelMicCapture();
-    else if (!window.chachaDesktopPet) window.micHold(false);
+    else window.micHold(false);
+  });
+  window.addEventListener("storage", (event) => {
+    if (event.key !== "chacha-mic" || mic.capturing) return;
+    const saved = readMic();
+    if (saved.hold.join(",") === mic.hold.join(",") && saved.deviceId === mic.deviceId) return;
+    mic.deviceId = saved.deviceId;
+    mic.hold = saved.hold;
+    const select = $("mic-device");
+    if (select && [...select.options].some((option) => option.value === saved.deviceId)) {
+      select.value = saved.deviceId;
+    }
+    paintMicKey();
+    syncPetTalkKey();
+    if (!mic.holding) setMicHint(mic.want ? holdHint() : micOffHint());
   });
   const lang = $("talk-lang");
   if (lang) {
@@ -1850,7 +1954,7 @@ function bindTalk() {
     setCue("正在合成语音…");
     try {
       const data = await postJson("/api/perform", { text, lang: $("talk-lang").value, ...voiceBody() });
-      enqueueSpeech(data);
+      deliverSpeech(data);
     } catch (error) {
       $("status").textContent = error.message || "直接说失败";
       setCue("");
@@ -1885,7 +1989,7 @@ function bindTalk() {
       rememberTurn(data, text);
       $("talk-text").value = data.say || "";
       $("ask-text").value = "";
-      enqueueSpeech(data);
+      deliverSpeech(data);
     } catch (error) {
       const message = error.message || "DeepSeek 没有答上来";
       speech.notice = message;

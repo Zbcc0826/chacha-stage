@@ -12,7 +12,6 @@ import os
 import re
 import subprocess
 import threading
-import time
 import urllib.error
 import urllib.request
 
@@ -24,16 +23,7 @@ ROOT = Path(__file__).resolve().parent
 KEYS_FILE = ROOT / "keys"
 # 源码、配置和 npm 缓存都放在项目旁边，避免写进用户全局目录。
 HARNESS_ROOT = ROOT.parent / "deepseek-harness"
-DSH_HOME = HARNESS_ROOT / "dsh-home"
 WORKSPACE = HARNESS_ROOT / "workspace"
-# 角色定义放在 Harness 自己的 home，会作为 agent 指令加载。
-ROLE_FILE = DSH_HOME / "AGENTS.md"
-# 检索到的 Dota 2 事实写在工作目录，下一轮口播会带上。
-MEMORY_FILE = WORKSPACE / "memory" / "dota2.md"
-# B站热梗。和版本资料分开，避免自我介绍或口播被当成比赛笔记。
-MEME_FILE = WORKSPACE / "memory" / "bilibili.md"
-# 各家模型的二次元二创形象。只供接梗，不是茶茶的身份。
-MODEL_FILE = WORKSPACE / "memory" / "models.md"
 NODE = Path(r"C:\Program Files\nodejs\node.exe")
 NPX = Path(r"C:\Program Files\nodejs\node_modules\npm\bin\npx-cli.js")
 # 末尾的 /v1 会被官方适配器原样接上 /messages。
@@ -260,19 +250,8 @@ def answer_messages(raw):
     return _forward(raw)
 
 
-def _read_clip(path, limit):
-    """读角色或记忆。过长时保留结尾，那里是后加上的事实。"""
-    try:
-        text = path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
-    if len(text) <= limit:
-        return text
-    return text[-limit:]
-
-
 def _task(user_text, lang, vibe="relax", freedom=False, model_id=""):
-    """交给持久会话的这一轮。人设和记忆留给用户的 dsh，这里只带舞台契约。"""
+    """交给持久会话的这一轮。只带舞台契约，不附带固定人设或记忆档案。"""
     spoken = str(user_text or "").strip()[:2000]
     if lang in ("zh", "ja", "en"):
         spoken += "\n请使用语言：" + {"zh": "中文", "ja": "日语", "en": "英语"}[lang]
@@ -280,8 +259,7 @@ def _task(user_text, lang, vibe="relax", freedom=False, model_id=""):
         system_prompt(vibe, freedom, model_id or None),
         "",
         "这是同一条持久会话。前面说过的话已经在会话里。",
-        "人设和记忆以 AGENTS.md 和 memory 为准。缺事实再用 web_search，不够再 web_fetch。",
-        "记忆变长时让 Harness 自己压缩。",
+        "不要套用旧的角色人设，也不要读取 memory 里的旧档案。",
         "检索做完之后，只输出一个 JSON 对象，不要 Markdown。",
         "用户：" + spoken,
     ])
@@ -338,20 +316,6 @@ def _search_queries(data):
         if text:
             queries.append(text[:120])
     return queries
-
-
-def _remember(block):
-    """把检索到的事实追加进记忆，太长时留下开头说明和最近的记录。"""
-    MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        existing = MEMORY_FILE.read_text(encoding="utf-8").rstrip()
-    except OSError:
-        existing = "# Dota 2 记忆\n"
-    text = existing + "\n\n## %s\n%s\n" % (time.strftime("%Y-%m-%d"), block.strip())
-    if len(text) > 12000:
-        head = text.split("\n## ", 1)[0]
-        text = head.rstrip() + "\n\n" + text[-8000:]
-    MEMORY_FILE.write_text(text, encoding="utf-8")
 
 
 def _launcher():
@@ -432,56 +396,6 @@ def _run_session(task, env, timeout):
     if not final:
         raise HarnessError("Harness 没有给出回答")
     return final
-
-
-def _fact_lines(output):
-    """优先收列表。网页搜索有时只给段落，那种也留下，避免白查。"""
-    bullets = []
-    for line in scrub(output).splitlines():
-        item = line.strip()
-        if item.startswith("-") and len(item.strip("- ").strip()) > 1:
-            bullets.append(item)
-    if bullets:
-        return "\n".join(bullets[:20])
-    text = scrub(output).strip()
-    if len(text) < 2:
-        return ""
-    return text[:1500]
-
-
-def _research_api(queries):
-    """用 Harness 的官方 web_search 查。不打开网页版。"""
-    key = _api_key()
-    if not key:
-        return ""
-    env = _base_env()
-    env["DEEPSEEK_API_KEY"] = key
-    env.pop("DEEPSEEK_BASE_URL", None)
-    env.pop("DEEPSEEK_SEARCH_BASE_URL", None)
-    task = "\n".join([
-        "这次只检索，不要输出口播 JSON，不要攻击具体的人。",
-        "必要时用 web_search，单页不够再 web_fetch。",
-        "只输出 Markdown 列表，每条以 - 开头。",
-        "要查的问题：",
-        *[ "- " + item for item in queries ],
-    ])
-    output = _run_dsh(task, env, patch=False, timeout=150)
-    return _fact_lines(output)
-
-
-def _research(queries):
-    """用官方 API 的检索工具查，并把要点写进记忆。不走网页版。"""
-    block = ""
-    try:
-        print("检索走 API", flush=True)
-        block = _research_api(queries)
-    except HarnessError as exc:
-        print("Dota 检索没有完成:", scrub(exc), flush=True)
-        return ""
-    if not block:
-        return ""
-    _remember(block)
-    return block
 
 
 def ensure_profile():

@@ -288,6 +288,35 @@ def safe_join(root: Path, rel: str) -> Path | None:
 
 # 同一时间只跑一轮口播生成。第二轮如果是弹幕轮询，直接空转，避免两段一起说。
 _GEN_LOCK = threading.Lock()
+# 最近一次口播。桌宠来取，不占用生成锁。直播间和桌宠不是同一个浏览器，广播通道传不过去。
+_ACT_GUARD = threading.Lock()
+_ACT_SEQ = 0
+_ACT_BODY = None
+
+
+def publish_act(body):
+    """给这一轮口播编号。空转结果不占号。"""
+    global _ACT_SEQ, _ACT_BODY
+    if not isinstance(body, dict) or body.get("idle"):
+        return body
+    with _ACT_GUARD:
+        _ACT_SEQ += 1
+        stored = dict(body)
+        stored["actId"] = _ACT_SEQ
+        _ACT_BODY = stored
+        return stored
+
+
+def read_act(after):
+    """桌宠轮询。没有更新就返回空转，不把整段口播再发一遍。"""
+    try:
+        seen = int(after)
+    except (TypeError, ValueError):
+        seen = 0
+    with _ACT_GUARD:
+        if _ACT_BODY is None or _ACT_SEQ <= seen:
+            return {"idle": True, "actId": _ACT_SEQ}
+        return _ACT_BODY
 # 桌宠是单独的透明置顶窗口，不占用这个 HTTP 线程。
 # 名字要和 pet_window.py 里的互斥量一致。一台机器只留一个桌宠。
 _PET_LOCK = threading.Lock()
@@ -516,6 +545,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/pet":
             self._json(pet_status())
             return
+        if path == "/api/cue":
+            query = parse_qs(parsed.query)
+            self._json(read_act((query.get("after") or ["0"])[0]))
+            return
         if path == "/api/prompt":
             from llm import system_prompt
             body = system_prompt(load_vibe()).encode("utf-8")
@@ -576,9 +609,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             if path == "/api/perform":
-                self._json(build_performance(payload, payload.get("speak", True) is not False))
+                self._json(publish_act(build_performance(payload, payload.get("speak", True) is not False)))
             elif path == "/api/chat":
-                self._json(build_chat(payload))
+                self._json(publish_act(build_chat(payload)))
             elif path == "/api/dsh":
                 try:
                     self._json(save_dsh_settings(payload))

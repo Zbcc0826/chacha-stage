@@ -194,15 +194,16 @@
             <label class="check"><input id="opt-sway" type="checkbox" /> 摆头</label>
             <label class="check"><input id="opt-blink" type="checkbox" /> 眨眼</label>
             <label class="check"><input id="opt-mouse" type="checkbox" /> 鼠标注视</label>
-            <label class="check" id="ahoge-toggle"><input id="opt-ahoge" type="checkbox" checked /> 呆毛旋转</label>
           </div>
           <div class="row-actions">
+            <button type="button" id="btn-reload">恢复默认状态</button>
             <button type="button" id="btn-reset">恢复默认</button>
             <button type="button" id="btn-copy">复制锁定姿态</button>
             <button type="button" id="btn-catalog">复制参数表</button>
           </div>
           <div id="presets" class="presets"></div>
           <p class="clip-label">模型自带</p>
+          <label class="check" id="ahoge-toggle" hidden><input id="opt-ahoge" type="checkbox" checked /> 呆毛旋转</label>
           <div id="clips-motions"></div>
           <div id="clips-faces"></div>
         </div>
