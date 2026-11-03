@@ -113,5 +113,95 @@ class EngineTests(unittest.TestCase):
             engine_model.LIBRARY = old
 
 
+class ShareTests(unittest.TestCase):
+    def setUp(self):
+        import server
+        self.server = server
+        server._LOOK_REV = 0
+        server._LOOK = None
+        server._MIC_REV = 0
+        server._MIC = {"want": False, "hold": [], "owner": "", "ownerAt": 0.0}
+
+    def test_same_look_keeps_its_number(self):
+        body = {
+            "modelId": "deepseek-chan",
+            "zoom": 9,
+            "x": 40,
+            "y": -30,
+            "toggles": {"physics": True, "breath": False, "sway": False, "blink": False, "mouse": False, "ahoge": False},
+            "pose": {"ParamAngleZ": 3},
+        }
+        first = self.server.post_share({"look": body})
+        rev = first["look"]["rev"]
+        self.assertEqual(first["look"]["zoom"], 4)
+        again = self.server.post_share({"look": body})
+        self.assertEqual(again["look"]["rev"], rev)
+        self.assertEqual(again["look"]["x"], 40)
+        seen = self.server.read_share(rev, 0)
+        self.assertIsNone(seen["look"])
+
+    def test_pet_keeps_the_mic_until_it_goes_quiet(self):
+        import time
+        first = self.server.post_share({"mic": {"want": True, "hold": ["F1"], "owner": "pet"}})
+        self.assertEqual(first["mic"]["owner"], "pet")
+        stolen = self.server.post_share({"mic": {"owner": "web"}})
+        self.assertEqual(stolen["mic"]["owner"], "pet")
+        self.assertEqual(stolen["mic"]["rev"], first["mic"]["rev"])
+        self.server._MIC["ownerAt"] = time.time() - 5
+        heard = self.server.read_share(0, first["mic"]["rev"])
+        self.assertEqual(heard["mic"]["owner"], "web")
+        self.assertEqual(heard["mic"]["hold"], ["F1"])
+        self.assertTrue(heard["mic"]["want"])
+
+    def test_pet_heartbeat_does_not_renumber(self):
+        first = self.server.post_share({"mic": {"owner": "pet", "want": False, "hold": ["F1"]}})
+        again = self.server.post_share({"mic": {"owner": "pet"}})
+        self.assertEqual(again["mic"]["rev"], first["mic"]["rev"])
+
+
+class TalkHookTests(unittest.TestCase):
+    def setUp(self):
+        import pet_window as pet
+        self.pet = pet
+        self.old_notify = pet._notify_talk
+        self.old_vk = pet._vk_from_hook
+        self.old_thread = pet._PAGE_THREAD
+        pet._TALK_KEYS = []
+        pet._TALK_DOWN = False
+        pet._TALK_HELD.clear()
+        pet._TALK_CAPTURE = False
+        pet._PAGE_QUEUE.clear()
+
+    def tearDown(self):
+        self.pet._notify_talk = self.old_notify
+        self.pet._vk_from_hook = self.old_vk
+        self.pet._PAGE_THREAD = self.old_thread
+        self.pet._PAGE_QUEUE.clear()
+        self.pet._TALK_KEYS = []
+        self.pet._TALK_DOWN = False
+        self.pet._TALK_HELD.clear()
+
+    def test_hold_notifies_press_once_then_release(self):
+        notes = []
+        self.pet._notify_talk = lambda window, held: notes.append(bool(held))
+        self.pet._TALK_KEYS = ["F1"]
+        self.pet._vk_from_hook = lambda lparam: 0x70
+        self.pet._on_talk_key(None, 0, 0x0100, 1)
+        self.pet._on_talk_key(None, 0, 0x0100, 1)
+        self.pet._on_talk_key(None, 0, 0x0101, 1)
+        self.assertEqual(notes, [True, False])
+
+    def test_quick_tap_keeps_only_the_latest_notice(self):
+        class Alive:
+            def is_alive(self):
+                return True
+
+        self.pet._PAGE_THREAD = Alive()
+        self.pet._notify_talk(object(), True)
+        self.pet._notify_talk(object(), False)
+        self.assertEqual(len(self.pet._PAGE_QUEUE), 1)
+        self.assertIn("false", self.pet._PAGE_QUEUE[0][1])
+
+
 if __name__ == "__main__":
     unittest.main()

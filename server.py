@@ -317,6 +317,133 @@ def read_act(after):
         if _ACT_BODY is None or _ACT_SEQ <= seen:
             return {"idle": True, "actId": _ACT_SEQ}
         return _ACT_BODY
+
+
+# 直播间和桌宠不是同一个浏览器，本地存储互不相通。形象和语音开关放在服务里共用一份。
+_SHARE_GUARD = threading.Lock()
+_LOOK_REV = 0
+_LOOK = None
+_MIC_REV = 0
+_MIC = {"want": False, "hold": [], "owner": "", "ownerAt": 0.0}
+_LOOK_TOGGLES = ("physics", "breath", "sway", "blink", "mouse", "ahoge")
+
+
+def _share_number(value, low, high, fallback):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = fallback
+    return max(low, min(high, number))
+
+
+def _clean_pose(raw):
+    """只留下参数名和数值。条数有上限，避免一份超大姿态把轮询撑满。"""
+    if not isinstance(raw, dict):
+        return {}
+    pose = {}
+    for key, value in list(raw.items())[:80]:
+        name = str(key)[:80]
+        try:
+            pose[name] = round(float(value), 4)
+        except (TypeError, ValueError):
+            continue
+    return pose
+
+
+def _clean_toggles(raw):
+    src = raw if isinstance(raw, dict) else {}
+    return {name: bool(src.get(name)) for name in _LOOK_TOGGLES}
+
+
+def _clean_hold(raw):
+    if not isinstance(raw, list):
+        return []
+    hold = []
+    for item in raw[:2]:
+        name = str(item or "")[:20]
+        if name and name not in hold:
+            hold.append(name)
+    return hold
+
+
+def _expire_mic_owner(now):
+    """桌宠停了报活，把收听权交回直播间，并记一笔让页面能看见。"""
+    global _MIC_REV
+    if _MIC["owner"] == "pet" and now - float(_MIC["ownerAt"] or 0) > 2.5:
+        _MIC["owner"] = ""
+        _MIC_REV += 1
+
+
+def _public_mic(now):
+    """调用前要先做过期处理。空着的收听权算直播间。"""
+    return {"rev": _MIC_REV, "want": bool(_MIC["want"]), "hold": list(_MIC["hold"]), "owner": _MIC["owner"] or "web"}
+
+
+def post_share(payload):
+    """写入形象或语音。没变化不增加序号，避免两边互相覆盖。"""
+    global _LOOK_REV, _LOOK, _MIC_REV
+    now = time.time()
+    if not isinstance(payload, dict):
+        payload = {}
+    with _SHARE_GUARD:
+        _expire_mic_owner(now)
+        look = payload.get("look")
+        if isinstance(look, dict):
+            body = {
+                "modelId": str(look.get("modelId") or "")[:80],
+                "zoom": round(_share_number(look.get("zoom"), 0.25, 4.0, 1.0), 3),
+                "x": round(_share_number(look.get("x"), -2000, 2000, 0), 1),
+                "y": round(_share_number(look.get("y"), -2000, 2000, 0), 1),
+                "toggles": _clean_toggles(look.get("toggles")),
+                "pose": _clean_pose(look.get("pose")),
+            }
+            previous = None if _LOOK is None else {key: _LOOK.get(key) for key in body}
+            if body != previous:
+                _LOOK_REV += 1
+                stored = dict(body)
+                stored["rev"] = _LOOK_REV
+                _LOOK = stored
+        mic = payload.get("mic")
+        if isinstance(mic, dict):
+            changed = False
+            if "want" in mic and bool(mic.get("want")) != bool(_MIC["want"]):
+                _MIC["want"] = bool(mic.get("want"))
+                changed = True
+            if "hold" in mic:
+                hold = _clean_hold(mic.get("hold"))
+                if hold != _MIC["hold"]:
+                    _MIC["hold"] = hold
+                    changed = True
+            owner = str(mic.get("owner") or "")
+            # 桌宠还在报活时，直播间不能把收听权抢回去。
+            if owner == "web" and _MIC["owner"] == "pet" and now - float(_MIC["ownerAt"] or 0) < 2.5:
+                owner = ""
+            if owner in ("pet", "web"):
+                if _MIC["owner"] != owner:
+                    _MIC["owner"] = owner
+                    changed = True
+                _MIC["ownerAt"] = now
+            if changed:
+                _MIC_REV += 1
+        return {"look": _LOOK, "mic": _public_mic(now)}
+
+
+def read_share(look_after, mic_after):
+    """没有新序号就留空，页面不必反复套用同一份状态。"""
+    try:
+        seen_look = int(look_after)
+    except (TypeError, ValueError):
+        seen_look = 0
+    try:
+        seen_mic = int(mic_after)
+    except (TypeError, ValueError):
+        seen_mic = 0
+    now = time.time()
+    with _SHARE_GUARD:
+        _expire_mic_owner(now)
+        look = _LOOK if _LOOK is not None and _LOOK_REV > seen_look else None
+        mic = _public_mic(now) if _MIC_REV > seen_mic else None
+        return {"look": look, "mic": mic, "lookRev": _LOOK_REV, "micRev": _MIC_REV}
 # 桌宠是单独的透明置顶窗口，不占用这个 HTTP 线程。
 # 名字要和 pet_window.py 里的互斥量一致。一台机器只留一个桌宠。
 _PET_LOCK = threading.Lock()
@@ -549,6 +676,10 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             self._json(read_act((query.get("after") or ["0"])[0]))
             return
+        if path == "/api/share":
+            query = parse_qs(parsed.query)
+            self._json(read_share((query.get("look") or ["0"])[0], (query.get("mic") or ["0"])[0]))
+            return
         if path == "/api/prompt":
             from llm import system_prompt
             body = system_prompt(load_vibe()).encode("utf-8")
@@ -632,6 +763,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "models": model_catalog()})
             elif path == "/api/pet":
                 self._json(open_pet() if payload.get("open") is True else close_pet())
+            elif path == "/api/share":
+                self._json(post_share(payload))
             elif path == "/api/danmaku/done":
                 feed.finish(payload.get("id"))
                 self._json({"ok": True, "danmaku": feed.status()})

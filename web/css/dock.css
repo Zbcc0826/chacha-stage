@@ -55,6 +55,7 @@
 }
 .row-actions button:hover, .presets button:hover { border-color: var(--tea); color: white; }
 .presets button.active { background: var(--tea); border-color: var(--tea); color: white; }
+.presets button[hidden] { display: none !important; }
 
 #groups { overflow: auto; padding: 8px 10px 16px; }
 details { border-bottom: 1px solid var(--line); }

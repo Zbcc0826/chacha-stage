@@ -12,6 +12,8 @@ import ctypes
 import json
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 HOST = "127.0.0.1"
@@ -380,15 +382,6 @@ def _install_hook():
         except Exception as exc:
             print("透明样式失败 %s" % exc, flush=True)
         original(self, form, window, cache_dir)
-        try:
-            # 桌宠经常不在前台。关掉后台节流，口型和动作才会跟着声音走。
-            props = self.webview.CreationProperties
-            extra = " --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows"
-            current = props.AdditionalBrowserArguments or ""
-            if extra.strip() not in current:
-                props.AdditionalBrowserArguments = current + extra
-        except Exception as exc:
-            print("后台节流 %s" % exc, flush=True)
         _allow_microphone(self)
 
     hooked._chacha_hooked = True
@@ -399,6 +392,8 @@ def _install_hook():
 # 正在登记新按键时，才把按下的键名交给页面，仍然不拦截、不写日志。
 _TALK_KEYS = []
 _TALK_DOWN = False
+# 钩子里不能用 GetAsyncKeyState。那个读到的是上一拍的状态，会一按下就立刻判定松开。
+_TALK_HELD = set()
 _TALK_CAPTURE = False
 _TALK_SEEN = set()
 _TALK_HOOK = None
@@ -501,24 +496,49 @@ def _normalize_talk_keys(text):
     return keys
 
 
-def _notify_page(window, script):
-    """回到界面线程再通知页面。键盘钩子里不能直接调网页。"""
-    native = getattr(window, "native", None)
-    if native is None:
+# 网页脚本只能在后台线程里执行。界面线程自己 Invoke 自己会一直等，桌宠就卡死。
+_PAGE_QUEUE = []
+_PAGE_LOCK = threading.Lock()
+_PAGE_THREAD = None
+
+
+def _drain_page():
+    """从队列里取脚本再通知页面。不在键盘钩子和界面线程里调用。"""
+    while True:
+        time.sleep(0.05)
+        with _PAGE_LOCK:
+            batch = list(_PAGE_QUEUE)
+            _PAGE_QUEUE.clear()
+        for window, script, _replace in batch:
+            try:
+                window.evaluate_js(script)
+            except Exception as exc:
+                print("按键说话 %s" % exc, flush=True)
+
+
+def _notify_page(window, script, replace=""):
+    """只把脚本放进队列。调用方可能是界面线程，不能在这里等网页执行完。"""
+    global _PAGE_THREAD
+    if window is None:
         return
-
-    def apply():
-        try:
-            window.evaluate_js(script)
-        except Exception as exc:
-            print("按键说话 %s" % exc, flush=True)
-
-    from System import Action
-    native.BeginInvoke(Action(apply))
+    with _PAGE_LOCK:
+        if replace:
+            _PAGE_QUEUE[:] = [item for item in _PAGE_QUEUE if item[2] != replace]
+        _PAGE_QUEUE.append((window, script, replace))
+        if len(_PAGE_QUEUE) > 8:
+            del _PAGE_QUEUE[:-8]
+        if _PAGE_THREAD is None or not _PAGE_THREAD.is_alive():
+            _PAGE_THREAD = threading.Thread(target=_drain_page, name="pet-page", daemon=True)
+            _PAGE_THREAD.start()
 
 
 def _notify_talk(window, held):
-    _notify_page(window, "window.micHold&&window.micHold(%s)" % ("true" if held else "false"))
+    """同一种通知只留最后一次。按下又立刻松开时，不要先启动再掐掉识别。"""
+    _notify_page(
+        window,
+        "window.micHold&&window.micHold(%s)" % ("true" if held else "false"),
+        replace="talk",
+    )
 
 
 def _notify_capture(window, name, down):
@@ -532,9 +552,18 @@ def _notify_capture(window, name, down):
 
 def _install_talk_hook(window, names):
     """桌宠即使不在前台，按住这组键也会开始录音。"""
-    global _TALK_KEYS, _TALK_DOWN, _TALK_HOOK, _TALK_HOOK_PROC
+    global _TALK_KEYS, _TALK_DOWN, _TALK_HELD, _TALK_HOOK, _TALK_HOOK_PROC
     _TALK_KEYS = list(names)
-    if _TALK_DOWN and not _talk_combo_down():
+    # 安装发生在界面线程，这时读按键状态是准的。钩子回调里不能再读。
+    _TALK_HELD.clear()
+    for name in _TALK_KEYS:
+        if _talk_key_down(name):
+            _TALK_HELD.add(name)
+    held = bool(_TALK_KEYS) and all(key in _TALK_HELD for key in _TALK_KEYS)
+    if held and not _TALK_DOWN:
+        _TALK_DOWN = True
+        _notify_talk(window, True)
+    elif not held and _TALK_DOWN:
         _TALK_DOWN = False
         _notify_talk(window, False)
     if _TALK_HOOK:
@@ -559,17 +588,14 @@ def _install_talk_hook(window, names):
         print("按键钩子没挂上", flush=True)
 
 
-def _talk_combo_down():
-    return bool(_TALK_KEYS) and all(_talk_key_down(name) for name in _TALK_KEYS)
-
-
 def _on_talk_key(window, code, wparam, lparam):
+    """用这一次按下或松开更新组合。连发不重复开始录音。"""
     global _TALK_DOWN
     if code < 0 or wparam not in (0x0100, 0x0101, 0x0104, 0x0105):
         return
+    name = _name_of_vk(_vk_from_hook(lparam))
+    down = wparam in (0x0100, 0x0104)
     if _TALK_CAPTURE:
-        name = _name_of_vk(_vk_from_hook(lparam))
-        down = wparam in (0x0100, 0x0104)
         if not name:
             return
         if down:
@@ -580,7 +606,17 @@ def _on_talk_key(window, code, wparam, lparam):
             _TALK_SEEN.discard(name)
         _notify_capture(window, name, down)
         return
-    held = _talk_combo_down()
+    if not name:
+        return
+    if down:
+        if name in _TALK_HELD:
+            return
+        _TALK_HELD.add(name)
+    else:
+        if name not in _TALK_HELD:
+            return
+        _TALK_HELD.discard(name)
+    held = bool(_TALK_KEYS) and all(key in _TALK_HELD for key in _TALK_KEYS)
     if held and not _TALK_DOWN:
         _TALK_DOWN = True
         _notify_talk(window, True)
@@ -728,6 +764,20 @@ def _write_pid():
     atexit.register(clear)
 
 
+def _browser_arguments():
+    """桌宠不在前台时也要继续跑。在线语音识别跟着系统代理走，本机页面不绕出去。"""
+    extra = "--disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows"
+    try:
+        import urllib.request
+        proxies = urllib.request.getproxies()
+    except Exception:
+        proxies = {}
+    proxy = proxies.get("https") or proxies.get("http") or ""
+    if proxy.startswith("http://") or proxy.startswith("https://") or proxy.startswith("socks"):
+        extra += " --proxy-server=%s --proxy-bypass-list=<local>" % proxy
+    return extra
+
+
 def main():
     if not _acquire_singleton():
         return
@@ -740,6 +790,7 @@ def main():
 
     _install_create_hook()
     _install_hook()
+    os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = _browser_arguments()
     api = PetApi()
     x, y = _work_origin()
     window = webview.create_window(

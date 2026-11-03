@@ -212,6 +212,10 @@ body:not(.mode-pet) #dock[data-live="param"] > #param-pane {
 #credits { margin: 16px 2px 0; }
 #credits a { color: var(--ios-blue); }
 
+/* 模型没有呆毛时开关带 hidden。这里的 flex 不能把它重新显示出来。 */
+.check[hidden] {
+  display: none !important;
+}
 .check {
   display: flex;
   align-items: center;

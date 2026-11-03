@@ -139,6 +139,7 @@
       if (box && Math.abs(Number(box.value) - value) > 0.001) box.value = String(value);
       if (window.stage && window.stage.setView) window.stage.setView(1, 0, 0);
       resizePetWindow(value);
+      if (window.stageShare) window.stageShare.note();
       return;
     }
     if (!window.stage || !window.stage.setView) return;
@@ -147,6 +148,7 @@
       clamp(x, -2000, 2000, 0),
       clamp(y, -2000, 2000, 0),
     );
+    if (window.stageShare) window.stageShare.note();
   }
 
   function applyCss(text) {
@@ -268,6 +270,7 @@
     $("mode-pet").setAttribute("aria-pressed", pet ? "true" : "false");
     paintBackdrop();
     writeStore();
+    if (window.stageShare) window.stageShare.note();
     postPet(pet);
   }
 
