@@ -19,7 +19,7 @@ import time
 import urllib.request
 import uuid
 
-from danmaku import feed
+from danmaku import feed, redact, save_live_key
 from dsh_link import api_key as dsh_api_key, home as dsh_home, key_ready, save_api_key, save_home, status as dsh_status
 from engine_model import (
     browse,
@@ -64,8 +64,8 @@ def model_catalog() -> list:
 
 
 def public_error(exc):
-    """错误信息可以回给页面，但不能带上密钥。"""
-    text = str(exc).replace("\n", " ")
+    """错误信息可以回给页面，但不能带上密钥或直播身份码。"""
+    text = redact(str(exc)).replace("\n", " ")
     if "sk-" in text:
         return "上游请求失败"
     return text[:300] or "请求失败"
@@ -792,6 +792,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(post_share(payload))
             elif path == "/api/danmaku/done":
                 feed.finish(payload.get("id"))
+                self._json({"ok": True, "danmaku": feed.status()})
+            elif path == "/api/bili":
+                if "key" not in payload:
+                    raise RuntimeError("没有要保存的内容")
+                save_live_key(payload.get("key") or "")
                 self._json({"ok": True, "danmaku": feed.status()})
             else:
                 self.send_error(404)

@@ -267,7 +267,7 @@ button {
   min-height: 34px;
   cursor: pointer;
 }
-#btn-speak, #btn-ask, #btn-dsh, #btn-dsh-key, #btn-browse-model, #btn-save-model, #btn-back-live {
+#btn-speak, #btn-ask, #btn-dsh, #btn-dsh-key, #btn-live-key, #btn-browse-model, #btn-save-model, #btn-back-live {
   background: var(--ios-blue);
   color: #fff;
 }

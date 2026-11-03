@@ -47,6 +47,8 @@ Live2D Cubism Core 随运行时放在 `vendor/live2dcubismcore.min.js`，属于 
 
 口播和血条使用你自己的 DeepSeek 密钥。在直播间「连接 dsh」里填写，引擎会把它写进 dsh 主目录的 `.env`。也可以自己设置环境变量 `DEEPSEEK_API_KEY`。不要把密钥写进这个仓库。血条可能需要在服务内填一次密钥，用来跟踪 API 余额。插件的 `stage_status` 只报告有没有连上，不返回密钥。
 
+接弹幕同样按密钥来。在「连接」里填写你自己的直播身份码，引擎把它写进本机 `bili.local` 的 `key`，页面和日志都不回显。连接弹幕时才放进事件流要求的 `IDCode` 参数。留空再保存会清掉本机这份码。不要把身份码写进这个仓库。
+
 ## 运行
 
 工具要打到已经开着的舞台。先启动服务：
@@ -61,25 +63,3 @@ python server.py
 多句口播按 `lines` 的顺序来。一句合成完就交给页面开播，不等后面的句子都合成完。
 
 自由操控打开后，口播 JSON 可以带 `stage`，用来改角色位置、缩放、开关、控件位置、遮挡层和一段本页 CSS。关掉后这些指令会被丢掉。大部分样式和效果都可以让 dsh 或其他助手管理。
-
-
-内置角色是大肥鱼。原画 [神宫凉子](https://space.bilibili.com/13737731)，建模霓虹猫_NeonNeko。
-
-大肥鱼的模型文件按作者的使用须知，不放进这个仓库。请从作者的原始发布页取得压缩包，解压到 `models/deepseek-chan/`，并保留原来的文件名。引擎会读取目录里的 `.motion3.json` 和 `.exp3.json`，把它们登记成口播可以选的动作和表情。
-
-Live2D Cubism Core 随运行时放在 `vendor/live2dcubismcore.min.js`，属于 Live2D 的可再分发代码，协议见 [Live2D Proprietary Software License](https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html)。
-
-## 密钥
-
-口播和血条使用你自己的DeepSeek密钥。在直播间「连接 dsh」里填写，引擎会把它写进 dsh 主目录的 `.env`。也可以自己设置环境变量 `DEEPSEEK_API_KEY`。跟你的dsh说需求，它会做好的。血条可能需要在服务内填一次apikey以跟踪api余额。
-
-## 运行
-
-```text
-pip install -r requirements.txt
-python server.py
-```
-
-打开 `http://127.0.0.1:8787/`。给 dsh 改舞台和样式的格式在 `http://127.0.0.1:8787/schema/engine.md`。
-
-自由操控打开后，口播 JSON 可以带 `stage`，用来改角色位置、缩放、开关、控件位置、遮挡层和一段本页 CSS。关掉后这些指令会被丢掉。大部分样式和效果都可以让dsh或其他ai助手进行管理和自定义。

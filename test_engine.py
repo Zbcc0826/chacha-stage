@@ -65,6 +65,38 @@ class EngineTests(unittest.TestCase):
                 leaked.append(str(path.relative_to(ROOT)))
         self.assertEqual(leaked, [])
 
+    def test_live_key_is_saved_locally_and_not_echoed(self):
+        import json
+        import tempfile
+        import danmaku
+        folder = Path(tempfile.mkdtemp())
+        old = danmaku.BILI_FILE
+        danmaku.BILI_FILE = folder / "bili.local"
+        sample = "room-secret-value"
+        try:
+            danmaku.BILI_FILE.write_text("idcode=old-code\nsse=https://example.test/danmu\n", encoding="utf-8")
+            danmaku.save_live_key(sample)
+            text = danmaku.BILI_FILE.read_text(encoding="utf-8")
+            self.assertIn("key=" + sample, text)
+            self.assertNotIn("idcode=", text.lower())
+            self.assertIn("sse=https://example.test/danmu", text)
+            url = danmaku.stream_url(danmaku.load_bili())
+            self.assertIn("IDCode=" + sample, url)
+            status = danmaku.feed.status()
+            self.assertNotIn(sample, json.dumps(status))
+            self.assertTrue(status["configured"])
+            self.assertNotIn("key", status)
+            quiet = danmaku._quiet_error(RuntimeError("boom " + sample), sample)
+            self.assertNotIn(sample, quiet)
+            danmaku.save_live_key("")
+            cleared = danmaku.BILI_FILE.read_text(encoding="utf-8")
+            self.assertNotIn(sample, cleared)
+            self.assertNotIn("idcode=", cleared.lower())
+            self.assertFalse(danmaku.feed.status()["configured"])
+        finally:
+            danmaku.BILI_FILE = old
+            danmaku._WAKE.set()
+
     def test_user_key_file_keeps_other_lines(self):
         import tempfile
         import dsh_link

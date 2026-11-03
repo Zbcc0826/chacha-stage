@@ -608,6 +608,28 @@
         button.disabled = false;
       }
     });
+    $("btn-live-key").addEventListener("click", async () => {
+      const key = $("live-key").value.trim();
+      const button = $("btn-live-key");
+      button.disabled = true;
+      try {
+        const data = await (await fetch("/api/bili", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: key }),
+        })).json();
+        if (data.error) throw new Error(data.error);
+        $("live-key").value = "";
+        const ready = data.danmaku && data.danmaku.configured;
+        $("live-key-hint").textContent = ready
+          ? "身份码已写在本机。页面上看不到它。"
+          : "本机的直播身份码已清掉。";
+      } catch (error) {
+        $("live-key-hint").textContent = error.message || "身份码没有保存";
+      } finally {
+        button.disabled = false;
+      }
+    });
     const stage = $("stage");
     const tabs = $("live-tabs");
     if (tabs) {

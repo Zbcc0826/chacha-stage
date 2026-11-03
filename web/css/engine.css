@@ -52,7 +52,7 @@
 }
 #freedom-panel { margin-top: 8px; }
 #freedom-panel[hidden] { display: none; }
-#user-css, #dsh-home, #dsh-key {
+#user-css, #dsh-home, #dsh-key, #live-key {
   width: 100%;
   margin-top: 6px;
   background: var(--panel-2);
@@ -65,7 +65,7 @@
   font-family: Consolas, monospace;
   font-size: 12px;
 }
-#dsh-home, #dsh-key { padding: 6px 8px; }
+#dsh-home, #dsh-key, #live-key { padding: 6px 8px; }
 .dsh-key {
   display: flex;
   flex-direction: column;

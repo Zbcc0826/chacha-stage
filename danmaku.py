@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """从弹幕事件流收直播弹幕，并在开口前挑下一条。
 
-默认走 bbq.remoon.cn，只带身份码。身份码放在 bili.local，不进页面，也不写进日志。
+默认走 bbq.remoon.cn。身份码按密钥填在页面上，只写进 bili.local 的 key。
+连接时才放进上游要求的参数，不进页面，也不写进日志。
 红线弹幕在进入队列之前丢掉，不会交给口播生成。
 """
 
@@ -19,6 +20,8 @@ ROOT = Path(__file__).resolve().parent
 BILI_FILE = ROOT / "bili.local"
 # 托管的弹幕事件流。查询参数只在连接时拼上，不出现在页面和日志里。
 DEFAULT_SSE = "https://bbq.remoon.cn/bili-api/danmu"
+# 保存身份码后叫醒正在等待的连接线程。
+_WAKE = threading.Event()
 
 # 这些词出现在弹幕里就整条丢掉。只用于过滤，不会写进口播提示。
 _RED_WORDS = (
@@ -68,21 +71,63 @@ def load_bili():
     return cfg
 
 
+def live_key(cfg=None):
+    """本机保存的直播身份码。调用方不要把它写进页面或日志。"""
+    data = cfg if cfg is not None else load_bili()
+    return (data.get("key") or data.get("idcode") or "").strip()
+
+
+def save_live_key(value):
+    """按密钥把身份码写进 bili.local。空字符串会清掉旧的 idcode 和 key。"""
+    text = str(value or "").strip()
+    if any(ch in text for ch in "\r\n\x00"):
+        raise RuntimeError("身份码里不能换行")
+    kept = []
+    if BILI_FILE.is_file():
+        for line in BILI_FILE.read_text(encoding="utf-8").splitlines():
+            raw = line.strip()
+            if not raw or raw.startswith("#") or "=" not in raw:
+                kept.append(line)
+                continue
+            name = raw.split("=", 1)[0].strip().lower()
+            if name in ("key", "idcode"):
+                continue
+            kept.append(line)
+    else:
+        kept.append("# 本地弹幕配置。不要提交。网页和日志都不回显这些值。")
+        kept.append("sse=" + DEFAULT_SSE)
+    if text:
+        kept.append("key=" + text)
+    BILI_FILE.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
+    _WAKE.set()
+
+
+def redact(text):
+    """从一段报错里去掉身份码和地址。"""
+    secret = live_key()
+    cleaned = str(text or "")
+    if secret:
+        cleaned = cleaned.replace(secret, "")
+        cleaned = cleaned.replace(urllib.parse.quote(secret), "")
+    cleaned = re.sub(r"https?://\S+", "", cleaned)
+    return cleaned
+
+
 def stream_url(cfg):
-    """拼事件流地址。身份码只放在查询参数里。"""
+    """拼事件流地址。身份码只在这一刻放进上游要求的参数。"""
     base = (cfg.get("sse") or DEFAULT_SSE).strip()
-    if "IDCode=" in base:
+    lowered = base.lower()
+    if "idcode=" in lowered or "key=" in lowered:
         return base
     sep = "&" if "?" in base else "?"
-    return base + sep + "IDCode=" + urllib.parse.quote(cfg["idcode"])
+    return base + sep + "IDCode=" + urllib.parse.quote(live_key(cfg))
 
 
 def _quiet_error(exc, secret):
     """异常原文里可能夹着地址，去掉后再打日志。"""
-    text = str(exc)
+    text = redact(exc)
     if secret:
         text = text.replace(secret, "")
-    text = re.sub(r"https?://\S+", "", text)
     text = re.sub(r"\s+", " ", text).strip()
     return (type(exc).__name__ + (" " + text[:80] if text else "")).strip()
 
@@ -237,14 +282,14 @@ class DanmakuFeed:
                 for item in self._board[-24:]
             ]
             connected = self.connected
-        if not cfg["idcode"]:
-            hint = "还没有身份码"
+        if not live_key(cfg):
+            hint = "还没有直播身份码"
         elif not connected:
             hint = "正在连接弹幕"
         else:
             hint = "弹幕已接上"
         return {
-            "configured": bool(cfg["idcode"]),
+            "configured": bool(live_key(cfg)),
             "connected": connected,
             "pending": pending,
             "hint": hint,
@@ -346,10 +391,12 @@ class DanmakuFeed:
     def _loop(self):
         told = False
         while True:
+            _WAKE.clear()
             cfg = load_bili()
-            if not cfg["idcode"]:
+            secret = live_key(cfg)
+            if not secret:
                 self.connected = False
-                time.sleep(5)
+                _WAKE.wait(5)
                 continue
             url = stream_url(cfg)
             try:
@@ -365,9 +412,9 @@ class DanmakuFeed:
             except Exception as exc:
                 self.connected = False
                 if not told:
-                    print("弹幕还没连上:", _quiet_error(exc, cfg.get("idcode") or ""), flush=True)
+                    print("弹幕还没连上:", _quiet_error(exc, secret), flush=True)
                     told = True
-                time.sleep(3)
+                _WAKE.wait(3)
             finally:
                 self.connected = False
 

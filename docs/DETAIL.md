@@ -11,7 +11,7 @@ pip install -r requirements.txt
 python server.py
 ```
 
-Open `http://127.0.0.1:8787/`. The bundle does not start that process and does not ship the character model.
+Open `http://127.0.0.1:8787/`. The bundle does not start that process and does not ship the character model. The livestream identity code is entered on the connection page like a key and stays on that machine.
 
 ## Tools
 
