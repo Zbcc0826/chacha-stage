@@ -1,6 +1,6 @@
 # 大肥鱼引擎：给 dsh 改代码用的格式
 
-本机页面是 `http://127.0.0.1:8787/`。口播由用户自己的 DeepSeek Harness 生成。密钥放在 dsh 的环境变量 `DEEPSEEK_API_KEY`，或 dsh 主目录的 `.env` 里。不要把密钥写进页面、`dsh.local` 或这份文档。
+本机页面是 `http://127.0.0.1:8787/`。口播由用户自己的 DeepSeek Harness 生成。用户在「连接 dsh」里填写自己的密钥，引擎把它写进 dsh 主目录的 `.env`，接口不把密钥返回来。也可以用环境变量 `DEEPSEEK_API_KEY`。不要把密钥写进 `dsh.local`、口播 JSON 或这份文档。
 
 模型是大肥鱼。原画神宫凉子，建模霓虹猫_NeonNeko。模型文件在本地 `models/deepseek-chan/`，不随引擎再分发。往 `Animation` 放新的 `.motion3.json`，或往 `Exp3` 放新的 `.exp3.json`，重启页面后就会出现在按钮和口播名单里。待机文件要能被认成 `Idle`。
 
@@ -33,7 +33,8 @@
 
 直播间和桌宠里是同一个开关。关掉时，`stage` 会被丢掉。打开时可以改：
 
-- `mode`：`live` 直播间，`pet` 桌宠。桌宠只留角色，点击角色才弹出控件，大小用 `pet-scale`
+- `mode`：`live` 直播间，`pet` 桌宠
+- `modelId`：只能填模型库里勾了「允许高自由度使用」的 id。没勾的模型不会被换上。人在页面上仍然可以自己切换任何已保存的模型。
 - `model.x` / `model.y` / `model.scale`：角色位置和缩放
 - `background`：底色、背景图透明度和尺寸。图片本身只能由人在页面导入
 - `widgets.hud`、`widgets.danmaku`：显示、位置、缩放、遮挡层 `z`。血条样式还有 `style`，弹幕还有 `count`

@@ -1,0 +1,346 @@
+/* 直播间和桌宠的控件按 iOS 分组列表来排。舞台品红底不变。 */
+
+:root {
+  --ios-bg: #f2f2f7;
+  --ios-card: #ffffff;
+  --ios-text: #1c1c1e;
+  --ios-secondary: rgba(60, 60, 67, 0.6);
+  --ios-blue: #007aff;
+  --ios-green: #34c759;
+  --ios-fill: rgba(120, 120, 128, 0.12);
+  --ios-sep: rgba(60, 60, 67, 0.16);
+  --ink: var(--ios-bg);
+  --panel: var(--ios-bg);
+  --panel-2: var(--ios-card);
+  --line: var(--ios-sep);
+  --text: var(--ios-text);
+  --muted: var(--ios-secondary);
+  --tea: var(--ios-blue);
+  --tea-2: var(--ios-blue);
+  --ok: var(--ios-green);
+  --paper: var(--ios-text);
+  color-scheme: light;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+html, body { background: var(--ios-bg); color: var(--ios-text); }
+
+#app { grid-template-rows: 52px 1fr; }
+
+#top {
+  height: 52px;
+  gap: 12px;
+  padding: 0 16px;
+  background: rgba(249, 249, 249, 0.86);
+  border-bottom: 0.5px solid var(--ios-sep);
+  backdrop-filter: saturate(180%) blur(20px);
+}
+.brand { min-width: 0; gap: 8px; }
+.brand strong { font-size: 17px; font-weight: 600; letter-spacing: -0.02em; }
+.brand em { margin-top: 0; font-size: 12px; color: var(--ios-secondary); }
+.mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--ios-blue);
+  font-size: 15px;
+}
+#status { color: var(--ios-secondary); font-size: 13px; }
+.pill {
+  border: 0;
+  background: var(--ios-fill);
+  color: var(--ios-secondary);
+  border-radius: 999px;
+}
+.pill.ready { color: var(--ios-green); background: rgba(52, 199, 89, 0.15); border: 0; }
+#model-pick, select, input[type="text"], input[type="password"], input[type="number"], input[type="search"], textarea {
+  background: var(--ios-fill);
+  color: var(--ios-text);
+  border: 0;
+  border-radius: 10px;
+  min-height: 34px;
+  padding: 6px 10px;
+  outline: none;
+}
+textarea:focus, input:focus, select:focus { box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.25); }
+#model-pick { min-height: 32px; }
+
+.mode-switch {
+  padding: 2px;
+  gap: 0;
+  background: var(--ios-fill);
+  border-radius: 9px;
+}
+.mode-switch button {
+  border: 0;
+  background: transparent;
+  color: var(--ios-text);
+  border-radius: 7px;
+  min-height: 28px;
+  padding: 4px 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.mode-switch button[aria-pressed="true"] {
+  background: #fff;
+  color: #000;
+  border: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+main { grid-template-columns: 1fr 400px; }
+#stage { background: #ff00ff; }
+#caption {
+  min-height: 64px;
+  background: rgba(249, 249, 249, 0.94);
+  border-top: 0.5px solid var(--ios-sep);
+}
+#cue { color: var(--ios-blue); }
+#subtitle { font-size: 17px; font-weight: 600; letter-spacing: -0.02em; }
+#stage-hint { color: var(--ios-secondary); }
+
+#hud-rail {
+  width: 132px;
+  margin: 12px 0 12px 12px;
+  padding: 8px;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+.hud-switch, .hud-field {
+  color: var(--ios-text);
+  text-shadow: none;
+  font-size: 12px;
+}
+#hud-rail .check {
+  min-height: 32px;
+  padding: 4px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+#hud-rail .check input[type="checkbox"] { width: 42px; height: 26px; }
+#hud-rail .check input[type="checkbox"]::after { width: 22px; height: 22px; }
+#hud-rail .check input[type="checkbox"]:checked::after { transform: translateX(16px); }
+.hud-field select, .hud-field input[type="range"], #hud-z, #dm-z { width: 100%; }
+#hud-style, #hud-nums, #hud-z, #dm-z {
+  background: var(--ios-fill);
+  color: var(--ios-text);
+  border: 0;
+}
+
+#dock {
+  background: var(--ios-bg);
+  border-left: 0.5px solid var(--ios-sep);
+  overflow: hidden;
+}
+#live-tabs {
+  display: flex;
+  flex-shrink: 0;
+  gap: 2px;
+  overflow-x: auto;
+  padding: 6px 8px 0;
+  scrollbar-width: none;
+}
+#live-tabs::-webkit-scrollbar { display: none; }
+#live-tabs button {
+  flex: 0 0 auto;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ios-secondary);
+  font-size: 15px;
+  font-weight: 600;
+  padding: 8px 10px 6px;
+}
+#live-tabs button[aria-pressed="true"] {
+  color: var(--ios-blue);
+  background: transparent;
+  border-bottom-color: var(--ios-blue);
+  box-shadow: none;
+}
+
+/* 直播间一次只显示一页，页自己滚动。 */
+body:not(.mode-pet) #dock > #talk,
+body:not(.mode-pet) #dock > #backdrop,
+body:not(.mode-pet) #dock > .tools,
+body:not(.mode-pet) #dock > #model-library,
+body:not(.mode-pet) #dock > #dsh-link,
+body:not(.mode-pet) #dock > #freedom,
+body:not(.mode-pet) #dock > #param-pane { display: none; }
+body:not(.mode-pet) #dock[data-live="talk"] > #talk,
+body:not(.mode-pet) #dock[data-live="scene"] > #backdrop,
+body:not(.mode-pet) #dock[data-live="look"] > .tools,
+body:not(.mode-pet) #dock[data-live="model"] > #model-library,
+body:not(.mode-pet) #dock[data-live="link"] > #dsh-link,
+body:not(.mode-pet) #dock[data-live="free"] > #freedom,
+body:not(.mode-pet) #dock[data-live="param"] > #param-pane {
+  display: block;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+#talk, #backdrop, .tools, #model-library, #dsh-link, #freedom, #param-pane {
+  margin: 12px;
+  padding: 14px;
+  background: var(--ios-card);
+  border: 0;
+  border-radius: 14px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+#dock h3 {
+  margin: 14px 2px 8px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ios-secondary);
+}
+#dock h3:first-child { margin-top: 0; }
+#talk textarea, #ask-text, #user-css {
+  background: var(--ios-fill);
+  border: 0;
+  border-radius: 12px;
+  font-size: 16px;
+}
+.voice-hint, .ask-label, #dock-note, #credits, .model-path {
+  color: var(--ios-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+#credits { margin: 16px 2px 0; }
+#credits a { color: var(--ios-blue); }
+
+.check {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--ios-fill);
+  border-radius: 12px;
+  color: var(--ios-text);
+  font-size: 15px;
+}
+.check input[type="checkbox"] {
+  appearance: none;
+  flex: 0 0 auto;
+  width: 51px;
+  height: 31px;
+  margin: 0;
+  border: 0;
+  border-radius: 16px;
+  background: #e9e9ea;
+  position: relative;
+  cursor: pointer;
+}
+.check input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  transition: transform 0.2s ease;
+}
+.check input[type="checkbox"]:checked { background: var(--ios-green); }
+.check input[type="checkbox"]:checked::after { transform: translateX(20px); }
+.toggles { display: flex; flex-direction: column; gap: 0; margin-top: 4px; }
+.toggles .check { margin-top: 6px; }
+
+button {
+  border: 0;
+  border-radius: 10px;
+  background: var(--ios-fill);
+  color: var(--ios-blue);
+  font-weight: 600;
+  min-height: 34px;
+  cursor: pointer;
+}
+#btn-speak, #btn-ask, #btn-dsh, #btn-dsh-key, #btn-browse-model, #btn-save-model, #btn-back-live {
+  background: var(--ios-blue);
+  color: #fff;
+}
+.row-actions button, .presets button, #clips-motions button, #clips-faces button {
+  background: var(--ios-fill);
+  color: var(--ios-blue);
+}
+.presets button.active, .row-actions button:hover, .presets button:hover {
+  background: var(--ios-blue);
+  color: #fff;
+  border: 0;
+}
+.swatches button {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px var(--ios-sep);
+}
+input[type="range"] { accent-color: var(--ios-blue); }
+.voice-slider { color: var(--ios-secondary); font-size: 13px; }
+.param {
+  background: var(--ios-fill);
+  border-radius: 12px;
+  margin-top: 8px;
+  padding: 8px 10px;
+}
+.param .name { font-size: 15px; }
+.param .num, .param .id { color: var(--ios-secondary); }
+.param.hot { background: rgba(0, 122, 255, 0.08); }
+.param.locked { outline: 2px solid rgba(0, 122, 255, 0.45); }
+details { border-bottom: 0; margin-top: 8px; }
+summary { color: var(--ios-text); font-size: 17px; font-weight: 600; padding: 8px 2px; }
+#groups { overflow: visible; padding: 0; }
+#search { width: 100%; margin-top: 4px; }
+#toast, #error {
+  border-radius: 14px;
+  background: rgba(28, 28, 30, 0.92);
+  color: #fff;
+  backdrop-filter: blur(16px);
+}
+#error { background: rgba(255, 59, 48, 0.92); }
+
+html.desktop-pet #live-tabs { display: none !important; }
+html.desktop-pet body.pet-open #dock {
+  background: rgba(242, 242, 247, 0.94);
+  backdrop-filter: saturate(180%) blur(24px);
+  border-radius: 16px;
+  border: 0;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+}
+html.desktop-pet body.pet-open #pet-cards {
+  margin: 8px 8px 0;
+  padding: 2px;
+  gap: 0;
+  background: rgba(120, 120, 128, 0.16);
+  border-radius: 9px;
+}
+html.desktop-pet body.pet-open #pet-cards button {
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ios-text);
+  font-size: 13px;
+  font-weight: 600;
+  min-height: 28px;
+}
+html.desktop-pet body.pet-open #pet-cards button[aria-pressed="true"] {
+  background: #fff;
+  color: #000;
+  border: 0;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+html.desktop-pet body.pet-open #talk,
+html.desktop-pet body.pet-open #freedom,
+html.desktop-pet body.pet-open .tools,
+html.desktop-pet body.pet-open #dsh-link {
+  margin: 8px;
+  box-shadow: none;
+}

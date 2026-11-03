@@ -271,13 +271,13 @@ def _read_clip(path, limit):
     return text[-limit:]
 
 
-def _task(user_text, lang, vibe="relax", freedom=False):
+def _task(user_text, lang, vibe="relax", freedom=False, model_id=""):
     """交给持久会话的这一轮。人设和记忆留给用户的 dsh，这里只带舞台契约。"""
     spoken = str(user_text or "").strip()[:2000]
     if lang in ("zh", "ja", "en"):
         spoken += "\n请使用语言：" + {"zh": "中文", "ja": "日语", "en": "英语"}[lang]
     return "\n".join([
-        system_prompt(vibe, freedom),
+        system_prompt(vibe, freedom, model_id or None),
         "",
         "这是同一条持久会话。前面说过的话已经在会话里。",
         "人设和记忆以 AGENTS.md 和 memory 为准。缺事实再用 web_search，不够再 web_fetch。",
@@ -509,7 +509,7 @@ def _parse_dsh(output):
         raise HarnessError(scrub(str(exc)) + (("\n" + detail) if detail else ""))
 
 
-def ask_harness(user_text, history=None, lang="auto", vibe="relax", freedom=False):
+def ask_harness(user_text, history=None, lang="auto", vibe="relax", freedom=False, model_id=""):
     """唤醒同一条 headless 会话。检索和记忆压缩由用户的 Harness 自己做。"""
     del history  # 会话里已经有上文，不再把页面历史贴进去。
     if not NODE.is_file() or not NPX.is_file():
@@ -522,7 +522,7 @@ def ask_harness(user_text, history=None, lang="auto", vibe="relax", freedom=Fals
     # 密钥来自用户的 dsh，不从引擎的 keys 文件注入。
     env["DEEPSEEK_API_KEY"] = _api_key()
     env.pop("DEEPSEEK_SEARCH_BASE_URL", None)
-    output = _run_session(_task(user_text, lang, vibe, freedom), env, 240)
+    output = _run_session(_task(user_text, lang, vibe, freedom, model_id), env, 240)
     data = _parse_dsh(output)
     if _search_queries(data):
         print("模型还在要检索词，改让会话自己查", flush=True)
@@ -536,10 +536,16 @@ def ask_harness(user_text, history=None, lang="auto", vibe="relax", freedom=Fals
         reply = normalize_reply(data, vibe)
     except ValueError as exc:
         raise HarnessError(str(exc))
-    from engine_model import clean_name, clean_stage, known_expressions, known_motions
+    from engine_model import clean_name, clean_stage, freedom_ids, known_expressions, known_motions
 
-    motions = known_motions()
-    expressions = known_expressions()
+    target = model_id or ""
+    stage_raw = data.get("stage") if isinstance(data, dict) and isinstance(data.get("stage"), dict) else {}
+    requested = str(stage_raw.get("modelId") or "")
+    allowed = freedom_ids() if freedom else set()
+    if freedom and requested in allowed:
+        target = requested
+    motions = known_motions(target or None)
+    expressions = known_expressions(target or None)
     for line in reply.get("lines") or []:
         motion = clean_name(line.get("motion"), motions)
         expression = clean_name(line.get("expression"), expressions)
@@ -552,7 +558,7 @@ def ask_harness(user_text, history=None, lang="auto", vibe="relax", freedom=Fals
         else:
             line.pop("expression", None)
     if freedom:
-        stage = clean_stage(data.get("stage") if isinstance(data, dict) else None)
+        stage = clean_stage(data.get("stage") if isinstance(data, dict) else None, allowed)
         if stage:
             reply["stage"] = stage
     return reply, last_channel()

@@ -52,7 +52,7 @@
 }
 #freedom-panel { margin-top: 8px; }
 #freedom-panel[hidden] { display: none; }
-#user-css, #dsh-home {
+#user-css, #dsh-home, #dsh-key {
   width: 100%;
   margin-top: 6px;
   background: var(--panel-2);
@@ -65,7 +65,15 @@
   font-family: Consolas, monospace;
   font-size: 12px;
 }
-#dsh-home { padding: 6px 8px; }
+#dsh-home, #dsh-key { padding: 6px 8px; }
+.dsh-key {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
 #clips-motions, #clips-faces { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 #credits { color: var(--muted); font-size: 12px; line-height: 1.55; }
 #credits a { color: var(--tea-2); }
@@ -100,6 +108,84 @@ body.mode-pet.pet-open #dock {
   border-radius: 12px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
 }
+/* 桌宠里的控件是右下角的小卡片，不铺满窗口，也不把角色整个人挡住。 */
+#pet-cards { display: none; }
+html.desktop-pet body.pet-open #dock {
+  /* 跟角色锚点（50% 宽、56% 高）保持固定偏移，不贴窗口右下角。 */
+  top: clamp(8px, calc(56% + 8px), calc(100% - 288px));
+  left: clamp(8px, calc(50% + 20px), calc(100% - 276px));
+  right: auto;
+  bottom: auto;
+  width: min(268px, calc(100% - 16px));
+  max-height: min(280px, 46vh);
+  overflow: hidden;
+}
+html.desktop-pet body.pet-open #pet-cards {
+  display: flex;
+  gap: 4px;
+  padding: 8px 8px 0;
+  flex-shrink: 0;
+}
+html.desktop-pet body.pet-open #pet-cards button {
+  flex: 1;
+  padding: 4px 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+}
+html.desktop-pet body.pet-open #pet-cards button[aria-pressed="true"] {
+  background: var(--tea);
+  border-color: var(--tea);
+  color: white;
+}
+html.desktop-pet body.pet-open #dock > * { display: none; }
+html.desktop-pet body.pet-open #dock > #pet-cards { display: flex; }
+html.desktop-pet body.pet-open #dock[data-card="talk"] > #talk,
+html.desktop-pet body.pet-open #dock[data-card="pet"] > #freedom,
+html.desktop-pet body.pet-open #dock[data-card="act"] > .tools,
+html.desktop-pet body.pet-open #dock[data-card="link"] > #dsh-link {
+  display: block;
+  overflow: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+html.desktop-pet body.pet-open #talk textarea { min-height: 44px; }
 body.hide-caption #caption { display: none; }
+/* 桌宠浮窗没有网页底色。回到直播间和桌宠大小只在这扇窗口里出现。 */
+html.desktop-pet,
+html.desktop-pet body,
+html.desktop-pet #app,
+html.desktop-pet #stage,
+html.desktop-pet #stage-frame,
+html.desktop-pet #stage-column,
+html.desktop-pet main {
+  background: transparent !important;
+}
+html.desktop-pet, html.desktop-pet body { overflow: hidden; }
+html.desktop-pet #stage-hint,
+html.desktop-pet #hud,
+html.desktop-pet #danmaku-layer { display: none !important; }
+#pet-only { display: none; }
 body.mode-pet #pet-only { display: flex; }
-#pet-only { display: none; margin-top: 8px; }
+#model-library-list { list-style: none; margin: 8px 0 0; padding: 0; }
+#model-library-list li {
+  margin: 0 0 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.model-path {
+  margin: 2px 0 4px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  word-break: break-all;
+}
+#model-save { margin-top: 8px; }
+#model-save-name {
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}

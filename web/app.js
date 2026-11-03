@@ -1,7 +1,10 @@
 /* 虚拟主播 / 桌宠引擎。
  * 滑杆范围直接读当前 moc。拖动即锁定，并在每帧绘制前写回。
  * 模型列表来自 /api/models。模型自带动作由 engine.js 播放。
+ * 带 ?surface=pet 的是桌面浮窗，不参加直播间的口播轮询。
  */
+const desktopPet = new URLSearchParams(location.search).get("surface") === "pet";
+window.chachaDesktopPet = desktopPet;
 
 /** 一键姿态。模型里没有的参数会跳过，数值按真实范围夹紧。 */
 const PRESETS = [
@@ -106,13 +109,18 @@ async function loadLabels(cdiUrl) {
 /** 用模型画布把角色摆进舞台，滚轮和拖拽在这个结果上叠加。 */
 function layoutModel() {
   if (!model || !app) return;
-  const viewW = app.screen.width;
-  const viewH = app.screen.height;
+  const stage = $("stage");
+  const viewW = stage && stage.clientWidth ? stage.clientWidth : app.screen.width;
+  const viewH = stage && stage.clientHeight ? stage.clientHeight : app.screen.height;
+  if (app.renderer && (Math.abs(app.screen.width - viewW) > 1 || Math.abs(app.screen.height - viewH) > 1)) {
+    app.renderer.resize(viewW, viewH);
+  }
   const iw = model.internalModel.originalWidth || model.internalModel.width || 1;
   const ih = model.internalModel.originalHeight || model.internalModel.height || 1;
   const fit = Math.min(viewW / iw, viewH / ih) * 0.9;
   model.scale.set(fit * zoom);
   if (model.anchor) model.anchor.set(0.5, 0.62);
+  // 桌宠缩放以这个点为中心，比例要和 pet_window._resize_hwnd 一致。
   model.position.set(viewW * 0.5 + panX, viewH * 0.56 + panY);
 }
 
@@ -120,11 +128,22 @@ function bindStagePointer() {
   const stage = $("stage");
   stage.addEventListener("wheel", (event) => {
     event.preventDefault();
+    if (window.chachaDesktopPet) {
+      const box = $("pet-scale");
+      const current = box ? Number(box.value) || 1 : 1;
+      const next = Math.min(4, Math.max(0.6, Math.round(current * (event.deltaY > 0 ? 0.92 : 1.08) * 20) / 20));
+      if (box) {
+        box.value = String(next);
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      return;
+    }
     const next = zoom * (event.deltaY > 0 ? 0.92 : 1.08);
     zoom = Math.min(4, Math.max(0.25, next));
     layoutModel();
   }, { passive: false });
   stage.addEventListener("pointerdown", (event) => {
+    if (window.chachaDesktopPet) return;
     if ($("opt-mouse").checked || event.button !== 0) return;
     draggingStage = true;
     dragLast = { x: event.clientX, y: event.clientY };
@@ -572,13 +591,13 @@ function updateBrand(info) {
   document.title = info.name + " · 虚拟主播";
 }
 
-async function main() {
-  if (!window.Live2DCubismCore || !window.PIXI || !PIXI.live2d) {
-    throw new Error("Live2D 运行时没有加载完成");
-  }
-  const data = await (await fetch("/api/models")).json();
-  catalog = data.models || [];
+/** 按模型库重画下拉框。当前选中的模型尽量留着。 */
+function fillModelPick(models) {
+  catalog = models || [];
+  window.stageLibrary = catalog;
   const pick = $("model-pick");
+  const current = pick.value;
+  pick.replaceChildren();
   for (const item of catalog) {
     const option = document.createElement("option");
     option.value = item.id;
@@ -586,6 +605,26 @@ async function main() {
     option.disabled = !item.ready;
     pick.appendChild(option);
   }
+  if ([...pick.options].some((option) => option.value === current)) pick.value = current;
+  const browse = document.getElementById("btn-browse-model");
+  if (browse && window.stagePicker) browse.textContent = window.stagePicker;
+  if (window.renderModelLibrary) window.renderModelLibrary();
+}
+
+async function refreshModels() {
+  const data = await (await fetch("/api/models")).json();
+  if (data.picker) window.stagePicker = data.picker;
+  fillModelPick(data.models || []);
+  return data;
+}
+window.refreshModels = refreshModels;
+
+async function main() {
+  if (!window.Live2DCubismCore || !window.PIXI || !PIXI.live2d) {
+    throw new Error("Live2D 运行时没有加载完成");
+  }
+  const data = await refreshModels();
+  const pick = $("model-pick");
   pick.addEventListener("change", () => {
     showModel(pick.value).catch(showError);
   });
@@ -606,7 +645,9 @@ async function main() {
   window.addEventListener("pointerup", () => {
     draggingIndex = -1;
   });
-  window.addEventListener("resize", layoutModel);
+  window.addEventListener("resize", () => {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(layoutModel));
+  });
   setInterval(syncSliders, 120);
   expose();
   const requested = new URLSearchParams(location.search).get("model");
@@ -945,6 +986,7 @@ function finishSpeech() {
     return;
   }
   if (speech.live) armLive();
+  window.setTimeout(resumeMic, 350);
   window.setTimeout(() => {
     if (speech.token === token && !speech.active && $("subtitle")) {
       $("subtitle").textContent = "";
@@ -992,7 +1034,9 @@ function beginPerformance(data) {
   speech.notice = "";
   speech.level = 0;
   if (data.vibe) adoptVibe(data.vibe);
-  if (data.stage && window.stageFreedom) window.stageFreedom.apply(data.stage);
+  if (data.stage && window.stageFreedom) {
+    Promise.resolve(window.stageFreedom.apply(data.stage)).catch((error) => console.warn(error));
+  }
   if (data.heard && data.heard.id != null) {
     if (speech.replyId != null && speech.replyId !== data.heard.id) noteDanmakuDone(speech.replyId);
     speech.replyId = data.heard.id;
@@ -1009,6 +1053,7 @@ function playPerformance(data) {
 
 /** 播队列里的一句。说完再叫下一句，表情从上一句的脸上缓过去。 */
 function startLine(token, index, reply) {
+  pauseMic();
   if (speech.token !== token) return;
   const line = speech.lines[index];
   if (!line) {
@@ -1198,6 +1243,7 @@ async function armLive() {
       lang: $("talk-lang").value,
       history: speech.history,
       freedom: window.stageFreedom ? window.stageFreedom.enabled() : false,
+      model: window.stage && window.stage.current && window.stage.current() ? window.stage.current().id : "",
       ...voiceBody(),
     });
     showDanmaku(data.danmaku);
@@ -1217,7 +1263,582 @@ async function armLive() {
   }
 }
 
+// 语音输入默认关闭。只听用户选中的那只麦克风。
+// 没设按键时一直听；设了按键就按住才录，松开发给 dsh。按键最多两个。
+const HOLD_LABELS = {
+  Control: "Ctrl", Shift: "Shift", Alt: "Alt", Meta: "Win", Space: "空格",
+  Enter: "回车", Tab: "Tab", Escape: "Esc", Backspace: "退格", Delete: "Delete",
+  ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→",
+};
+const mic = {
+  want: false,
+  deviceId: "",
+  hold: [],
+  capturing: false,
+  holding: false,
+  holdFinishing: false,
+  heard: "",
+  interim: "",
+  captureDown: [],
+  capturePeak: [],
+  pageHeld: new Set(),
+  stream: null,
+  recognition: null,
+  lastText: "",
+  lastAt: 0,
+};
+
+function setMicHint(text) {
+  const hint = $("mic-state");
+  if (hint) hint.textContent = text;
+}
+
+function formatHold(keys) {
+  return (keys || []).map((key) => HOLD_LABELS[key] || key).join(" + ");
+}
+
+function validHoldKey(name) {
+  if (/^[A-Z]$/.test(name) || /^[0-9]$/.test(name) || /^F([1-9]|1[0-2])$/.test(name)) return true;
+  return Object.prototype.hasOwnProperty.call(HOLD_LABELS, name);
+}
+
+function validHold(list) {
+  if (!Array.isArray(list)) return [];
+  const keys = [];
+  list.slice(0, 2).forEach((item) => {
+    const name = String(item || "");
+    if (validHoldKey(name) && !keys.includes(name)) keys.push(name);
+  });
+  return keys;
+}
+
+function keyName(event) {
+  const code = event.code || "";
+  if (code.startsWith("Control")) return "Control";
+  if (code.startsWith("Shift")) return "Shift";
+  if (code.startsWith("Alt")) return "Alt";
+  if (code.startsWith("Meta")) return "Meta";
+  if (code === "Space") return "Space";
+  if (code === "Enter" || code === "NumpadEnter") return "Enter";
+  if (code === "Tab") return "Tab";
+  if (code === "Escape") return "Escape";
+  if (code === "Backspace") return "Backspace";
+  if (code === "Delete") return "Delete";
+  if (/^F([1-9]|1[0-2])$/.test(code)) return code;
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+  if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+  if (/^Arrow(Up|Down|Left|Right)$/.test(code)) return code;
+  return "";
+}
+
+function holdHint() {
+  const name = micName();
+  if (mic.hold.length) return "按住「" + formatHold(mic.hold) + "」说话，松开后发给 dsh。";
+  return "正在听「" + name + "」。说完一句就会发给 dsh。";
+}
+
+function micOffHint() {
+  if (mic.hold.length) return "语音输入关着。打开后，按住「" + formatHold(mic.hold) + "」才会录音。";
+  return "语音输入关着。打开后可选一只麦克风，也可以设置按住说话的按键。";
+}
+
+function micName() {
+  const select = $("mic-device");
+  return select && select.selectedOptions[0] ? select.selectedOptions[0].textContent : "麦克风";
+}
+
+function writeMic() {
+  try {
+    localStorage.setItem("chacha-mic", JSON.stringify({
+      deviceId: mic.deviceId || "",
+      hold: mic.hold,
+    }));
+  } catch (error) {}
+}
+
+function readMic() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("chacha-mic") || "{}");
+    return {
+      deviceId: saved && saved.deviceId ? String(saved.deviceId) : "",
+      hold: validHold(saved && saved.hold),
+    };
+  } catch (error) {
+    return { deviceId: "", hold: [] };
+  }
+}
+
+function paintMicKey() {
+  const button = $("btn-mic-key");
+  const clear = $("btn-mic-key-clear");
+  if (!button) return;
+  button.setAttribute("aria-pressed", mic.capturing ? "true" : "false");
+  button.textContent = mic.capturing ? "请按下按键…" : (mic.hold.length ? "按住 " + formatHold(mic.hold) : "设置按住说话");
+  if (clear) clear.disabled = mic.capturing || !mic.hold.length;
+}
+
+/** 把按键交给桌宠进程。浮窗不在前台时，页面自己收不到键盘。 */
+function syncPetTalkKey() {
+  if (!window.chachaDesktopPet) return;
+  const send = () => {
+    const api = window.pywebview && window.pywebview.api;
+    if (!api || !api.set_talk_key) return false;
+    const active = mic.want && !mic.capturing ? mic.hold.join(",") : "";
+    api.set_talk_key(active);
+    return true;
+  };
+  if (send() || mic.petKeyWait) return;
+  mic.petKeyWait = true;
+  window.addEventListener("pywebviewready", () => {
+    mic.petKeyWait = false;
+    send();
+  }, { once: true });
+}
+
+function recognitionLang() {
+  const lang = $("talk-lang") && $("talk-lang").value;
+  if (lang === "ja") return "ja-JP";
+  if (lang === "en") return "en-US";
+  return "zh-CN";
+}
+
+/** 列出音频输入。拿到权限之后才会有设备名字。 */
+async function listMics() {
+  const select = $("mic-device");
+  if (!select || !navigator.mediaDevices) return;
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const inputs = devices.filter((device) => device.kind === "audioinput");
+  const current = select.value || mic.deviceId;
+  select.replaceChildren();
+  if (!inputs.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "没有麦克风";
+    select.appendChild(option);
+    return;
+  }
+  inputs.forEach((device, index) => {
+    const option = document.createElement("option");
+    option.value = device.deviceId;
+    option.textContent = device.label || ("麦克风 " + (index + 1));
+    select.appendChild(option);
+  });
+  const preferred = [...select.options].some((option) => option.value === current) ? current : inputs[0].deviceId;
+  select.value = preferred;
+  mic.deviceId = select.value;
+  writeMic();
+}
+
+function closeMicStream() {
+  if (!mic.stream) return;
+  mic.stream.getTracks().forEach((track) => track.stop());
+  mic.stream = null;
+}
+
+/** 打开选中的麦克风。没有指定时用系统默认的那只。 */
+async function openMic() {
+  closeMicStream();
+  const id = $("mic-device") && $("mic-device").value;
+  const audio = {
+    echoCancellation: true,
+    noiseSuppression: true,
+  };
+  if (id) audio.deviceId = { exact: id };
+  mic.stream = await navigator.mediaDevices.getUserMedia({ audio });
+  const track = mic.stream.getAudioTracks()[0];
+  if (track && track.getSettings) {
+    const settings = track.getSettings();
+    if (settings.deviceId) mic.deviceId = settings.deviceId;
+  }
+  await listMics();
+}
+
+function stopRecognition() {
+  const recognition = mic.recognition;
+  mic.recognition = null;
+  if (!recognition) return;
+  recognition.onend = null;
+  recognition.onresult = null;
+  recognition.onerror = null;
+  try { recognition.abort(); } catch (error) {}
+}
+
+function pauseMic() {
+  stopRecognition();
+}
+
+function resumeMic() {
+  if (!mic.want || speech.active || speech.busy || speech.queue.length) return;
+  if (mic.hold.length) {
+    if (mic.holding) startRecognition(true);
+    return;
+  }
+  if (mic.recognition) return;
+  startRecognition(false);
+}
+
+function submitHeard(text) {
+  if (!mic.want || speech.busy || speech.active) return;
+  const ask = $("btn-ask");
+  const box = $("ask-text");
+  if (!ask || !box) return;
+  pauseMic();
+  box.value = text;
+  ask.click();
+}
+
+function startRecognition(hold) {
+  const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Ctor) {
+    setMicHint("这个窗口没有语音识别。请用 Chrome 或 Edge 打开直播间。");
+    return false;
+  }
+  stopRecognition();
+  const recognition = new Ctor();
+  recognition.lang = recognitionLang();
+  recognition.continuous = true;
+  recognition.interimResults = !!hold;
+  try {
+    if (mic.stream) recognition.mediaStream = mic.stream;
+  } catch (error) {}
+  recognition.onresult = (event) => {
+    let text = "";
+    let interim = "";
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      const piece = event.results[index][0].transcript;
+      if (event.results[index].isFinal) text += piece;
+      else interim += piece;
+    }
+    if (hold) {
+      if (!mic.holding && !mic.holdFinishing) return;
+      if (text.trim()) mic.heard = (mic.heard + " " + text).trim();
+      mic.interim = interim.trim();
+      const live = (mic.heard + " " + mic.interim).trim();
+      if (live) setMicHint("正在听：" + live);
+      return;
+    }
+    text = text.trim();
+    if (!text || !mic.want) return;
+    const now = performance.now();
+    if (text === mic.lastText && now - mic.lastAt < 4000) return;
+    mic.lastText = text;
+    mic.lastAt = now;
+    submitHeard(text);
+  };
+  recognition.onerror = (event) => {
+    const code = event.error || "";
+    if (code === "audio-capture" && mic.stream) {
+      closeMicStream();
+      setMicHint("识别改用系统默认麦克风。选定的那只被占用了。");
+      try { recognition.start(); } catch (error) {}
+      return;
+    }
+    if (code === "not-allowed" || code === "service-not-allowed") {
+      const box = $("opt-mic");
+      mic.want = false;
+      mic.holding = false;
+      if (box) box.checked = false;
+      const select = $("mic-device");
+      if (select) select.disabled = true;
+      closeMicStream();
+      syncPetTalkKey();
+      setMicHint("麦克风权限被拒绝了。");
+      return;
+    }
+    if (code !== "no-speech" && code !== "aborted") setMicHint("语音识别中断：" + code);
+  };
+  recognition.onend = () => {
+    if (hold) {
+      if (mic.holdFinishing) return;
+      if (!mic.holding || !mic.want || mic.recognition !== recognition) return;
+      window.setTimeout(() => {
+        if (!mic.holding || !mic.want || mic.recognition !== recognition) return;
+        try { recognition.start(); } catch (error) {}
+      }, 250);
+      return;
+    }
+    if (!mic.want || speech.active || speech.busy || mic.recognition !== recognition) return;
+    window.setTimeout(() => {
+      if (!mic.want || speech.active || speech.busy || mic.recognition !== recognition) return;
+      try { recognition.start(); } catch (error) {}
+    }, 250);
+  };
+  mic.recognition = recognition;
+  try {
+    recognition.start();
+    return true;
+  } catch (error) {
+    mic.recognition = null;
+    setMicHint(error.message || "语音识别没有启动");
+    return false;
+  }
+}
+
+function flushHold() {
+  const text = ((mic.heard || "") + " " + (mic.interim || "")).trim();
+  mic.heard = "";
+  mic.interim = "";
+  mic.holding = false;
+  mic.holdFinishing = false;
+  if (text) submitHeard(text);
+  else if (mic.want) setMicHint(holdHint());
+}
+
+function finishHold() {
+  mic.holding = false;
+  const recognition = mic.recognition;
+  if (!recognition) {
+    flushHold();
+    return;
+  }
+  if (mic.holdFinishing) return;
+  mic.holdFinishing = true;
+  recognition.onend = () => {
+    if (mic.recognition === recognition) mic.recognition = null;
+    flushHold();
+  };
+  try {
+    recognition.stop();
+  } catch (error) {
+    stopRecognition();
+    flushHold();
+    return;
+  }
+  window.setTimeout(() => {
+    if (!mic.holdFinishing) return;
+    stopRecognition();
+    flushHold();
+  }, 700);
+}
+
+/** 按住说话。桌宠的全局按键和页面自己的键盘都会调到这里。 */
+window.micHold = (down) => {
+  if (!mic.want || !mic.hold.length || mic.capturing) return;
+  if (down) {
+    if (mic.holding || mic.holdFinishing || speech.active || speech.busy || speech.queue.length) return;
+    mic.holding = true;
+    mic.heard = "";
+    mic.interim = "";
+    if (!startRecognition(true)) {
+      mic.holding = false;
+      return;
+    }
+    setMicHint("正在录音…松开后发给 dsh。");
+    return;
+  }
+  if (!mic.holding && !mic.recognition) return;
+  finishHold();
+};
+
+async function setMicEnabled(on) {
+  const select = $("mic-device");
+  mic.want = !!on;
+  if (select) select.disabled = !mic.want;
+  if (!mic.want) {
+    mic.holding = false;
+    mic.holdFinishing = false;
+    mic.heard = "";
+    mic.interim = "";
+    stopRecognition();
+    closeMicStream();
+    syncPetTalkKey();
+    setMicHint(micOffHint());
+    return;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    mic.want = false;
+    const box = $("opt-mic");
+    if (box) box.checked = false;
+    if (select) select.disabled = true;
+    setMicHint("这个窗口用不了麦克风。");
+    return;
+  }
+  setMicHint("正在打开麦克风…");
+  try {
+    await openMic();
+    if (!mic.want) {
+      closeMicStream();
+      return;
+    }
+    syncPetTalkKey();
+    if (mic.hold.length) {
+      setMicHint(holdHint());
+      return;
+    }
+    const started = startRecognition(false);
+    if (!started) return;
+    setMicHint(holdHint());
+  } catch (error) {
+    mic.want = false;
+    const box = $("opt-mic");
+    if (box) box.checked = false;
+    if (select) select.disabled = true;
+    closeMicStream();
+    syncPetTalkKey();
+    const denied = error && (error.name === "NotAllowedError" || error.name === "SecurityError");
+    setMicHint(denied ? "麦克风权限被拒绝了。" : (error.message || "麦克风打不开"));
+  }
+}
+
+function cancelMicCapture() {
+  mic.capturing = false;
+  mic.captureDown = [];
+  mic.capturePeak = [];
+  paintMicKey();
+  syncPetTalkKey();
+  if (mic.want) setMicHint(holdHint());
+  else setMicHint(micOffHint());
+}
+
+function beginMicCapture() {
+  mic.capturing = true;
+  mic.holding = false;
+  mic.holdFinishing = false;
+  mic.heard = "";
+  mic.interim = "";
+  mic.captureDown = [];
+  mic.capturePeak = [];
+  stopRecognition();
+  paintMicKey();
+  syncPetTalkKey();
+  setMicHint("按下要使用的按键，松开后保存。最多两个键。按 Esc 取消。");
+}
+
+function finishMicCapture() {
+  const keys = mic.capturePeak.slice(0, 2);
+  mic.capturing = false;
+  mic.captureDown = [];
+  mic.capturePeak = [];
+  if (keys.length === 1 && keys[0] === "Escape") {
+    paintMicKey();
+    syncPetTalkKey();
+    setMicHint(mic.want ? holdHint() : micOffHint());
+    return;
+  }
+  mic.hold = keys;
+  writeMic();
+  paintMicKey();
+  syncPetTalkKey();
+  if (mic.want) setMicHint(holdHint());
+  else setMicHint(micOffHint());
+}
+
+function onMicKeyDown(event) {
+  const name = keyName(event);
+  if (!name) return;
+  if (mic.capturing) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.repeat || mic.captureDown.includes(name)) return;
+    if (mic.capturePeak.length >= 2) return;
+    mic.captureDown.push(name);
+    mic.capturePeak.push(name);
+    return;
+  }
+  if (!mic.hold.length) return;
+  if (event.repeat) return;
+  mic.pageHeld.add(name);
+  if (mic.hold.every((key) => mic.pageHeld.has(key))) {
+    event.preventDefault();
+    window.micHold(true);
+  }
+}
+
+function onMicKeyUp(event) {
+  const name = keyName(event);
+  if (!name) return;
+  if (mic.capturing) {
+    event.preventDefault();
+    mic.captureDown = mic.captureDown.filter((key) => key !== name);
+    if (!mic.captureDown.length && mic.capturePeak.length) finishMicCapture();
+    return;
+  }
+  if (!mic.pageHeld.has(name)) return;
+  mic.pageHeld.delete(name);
+  if (mic.hold.length && !mic.hold.every((key) => mic.pageHeld.has(key))) window.micHold(false);
+}
+
+function bindMic() {
+  const box = $("opt-mic");
+  const select = $("mic-device");
+  const keyButton = $("btn-mic-key");
+  const clearButton = $("btn-mic-key-clear");
+  if (!box || !select) return;
+  box.checked = false;
+  select.disabled = true;
+  const saved = readMic();
+  mic.deviceId = saved.deviceId;
+  mic.hold = saved.hold;
+  paintMicKey();
+  setMicHint(micOffHint());
+  box.addEventListener("change", () => {
+    setMicEnabled(box.checked);
+  });
+  select.addEventListener("change", () => {
+    mic.deviceId = select.value;
+    writeMic();
+    if (!mic.want) return;
+    openMic().then(() => {
+      if (!mic.want) return;
+      if (mic.hold.length) {
+        if (mic.holding) startRecognition(true);
+        else setMicHint(holdHint());
+        return;
+      }
+      startRecognition(false);
+      setMicHint(holdHint());
+    }).catch((error) => {
+      setMicHint(error.message || "这只麦克风打不开");
+    });
+  });
+  if (keyButton) keyButton.addEventListener("click", () => {
+    if (mic.capturing) cancelMicCapture();
+    else beginMicCapture();
+  });
+  if (clearButton) clearButton.addEventListener("click", () => {
+    mic.hold = [];
+    mic.pageHeld.clear();
+    mic.holding = false;
+    mic.holdFinishing = false;
+    mic.heard = "";
+    mic.interim = "";
+    stopRecognition();
+    writeMic();
+    paintMicKey();
+    syncPetTalkKey();
+    if (mic.want) {
+      startRecognition(false);
+      setMicHint(holdHint());
+    } else setMicHint(micOffHint());
+  });
+  window.addEventListener("keydown", onMicKeyDown, true);
+  window.addEventListener("keyup", onMicKeyUp, true);
+  window.addEventListener("blur", () => {
+    mic.pageHeld.clear();
+    if (mic.capturing) cancelMicCapture();
+    else if (!window.chachaDesktopPet) window.micHold(false);
+  });
+  const lang = $("talk-lang");
+  if (lang) {
+    lang.addEventListener("change", () => {
+      if (!mic.want) return;
+      if (mic.hold.length) {
+        if (mic.holding) startRecognition(true);
+        return;
+      }
+      startRecognition(false);
+    });
+  }
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener("devicechange", () => {
+      if (mic.want) listMics().catch(() => {});
+    });
+  }
+  syncPetTalkKey();
+}
+
 function bindTalk() {
+  bindMic();
   const speak = $("btn-speak");
   const ask = $("btn-ask");
   speak.addEventListener("click", async () => {
@@ -1258,6 +1879,7 @@ function bindTalk() {
         lang: $("talk-lang").value,
         history: speech.history,
         freedom: window.stageFreedom ? window.stageFreedom.enabled() : false,
+      model: window.stage && window.stage.current && window.stage.current() ? window.stage.current().id : "",
         ...voiceBody(),
       });
       rememberTurn(data, text);
@@ -1299,9 +1921,9 @@ function bindTalk() {
   }
   const live = $("opt-live");
   if (live) {
-    speech.live = live.checked;
+    speech.live = live.checked && !window.chachaDesktopPet;
     live.addEventListener("change", () => {
-      speech.live = live.checked;
+      speech.live = live.checked && !window.chachaDesktopPet;
       if (!speech.live) {
         speech.queue = [];
         showDanmaku({ connected: false });
@@ -1536,6 +2158,7 @@ function bindHud() {
     } catch (error) {}
   }
   refreshHud();
+  document.addEventListener("chacha-hud-refresh", refreshHud);
   window.setInterval(refreshHud, 20000);
 }
 

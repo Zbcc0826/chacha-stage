@@ -7,17 +7,33 @@
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
+import ctypes
 import json
+import os
 import re
+import subprocess
+import sys
 import threading
 import time
 import urllib.request
 import uuid
 
 from danmaku import feed
-from dsh_link import api_key as dsh_api_key, key_ready, save_home, status as dsh_status
-from engine_model import ensure_index, public_catalog, spec as fish_spec
+from dsh_link import api_key as dsh_api_key, home as dsh_home, key_ready, save_api_key, save_home, status as dsh_status
+from engine_model import (
+    browse,
+    ensure_index,
+    freedom_ids,
+    load_library,
+    model_map,
+    picker_label,
+    public_catalog,
+    public_model,
+    remove_model,
+    save_model,
+    set_freedom,
+)
 from harness_llm import HarnessError, answer_messages, ask_harness, context_public
 from perform import catalog, load_vibe, plan, public_vibe, save_vibe
 from tts import synthesize
@@ -26,11 +42,6 @@ ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
 VENDOR = ROOT / "vendor"
 ensure_index()
-_fish = fish_spec()
-# 只内置大肥鱼。目录在本地，接口不回磁盘路径。
-MODELS = {
-    _fish["id"]: _fish,
-}
 AUDIO_DIR = ROOT / "audio"
 HOST = "127.0.0.1"
 PORT = 8787
@@ -48,18 +59,8 @@ MIME = {
 
 
 def model_catalog() -> list:
-    """可供切换的模型。ready 只表示入口 json 是否存在。"""
-    items = []
-    for model_id, spec in MODELS.items():
-        items.append({
-            "id": model_id,
-            "name": spec["name"],
-            "mark": spec["mark"],
-            "model": spec["model"],
-            "cdi": spec["cdi"],
-            "ready": (spec["dir"] / spec["model"]).is_file(),
-        })
-    return items
+    """已保存的模型。路径留在本机页面上，方便确认选的是哪一套。"""
+    return [public_model(record) for record in load_library()]
 
 
 def public_error(exc):
@@ -144,6 +145,7 @@ def build_chat(payload):
                 payload.get("lang") or "auto",
                 vibe,
                 payload.get("freedom") is True,
+                str(payload.get("model") or ""),
             )
         except HarnessError as exc:
             raise RuntimeError(str(exc))
@@ -204,6 +206,26 @@ _BALANCE = {"at": 0.0, "hp": None, "yuan": None, "error": ""}
 _BALANCE_TTL = 30
 
 
+def reset_balance():
+    """换了密钥就丢掉上一轮余额，下一轮血条重新问官方接口。"""
+    _BALANCE.update(at=0.0, hp=None, yuan=None, error="")
+
+
+def save_dsh_settings(payload):
+    """保存 dsh 目录或用户自己的密钥。响应里不带密钥。"""
+    if any(name in payload for name in ("apiKey", "api_key", "token")):
+        raise RuntimeError("密钥请填在页面的密钥框里")
+    home_text = str(payload.get("home") or "").strip()
+    has_key = "key" in payload
+    if not home_text and not has_key:
+        raise RuntimeError("没有要保存的内容")
+    folder = save_home(home_text) if home_text else dsh_home()
+    if has_key:
+        save_api_key(payload.get("key") or "")
+        reset_balance()
+    return {"ok": True, "home": str(folder), "dsh": dsh_status()}
+
+
 def balance_hp():
     """查官方余额并换成血量。页面上看不到密钥。"""
     now = time.time()
@@ -211,7 +233,7 @@ def balance_hp():
         return {"hp": _BALANCE["hp"], "yuan": _BALANCE["yuan"], "error": _BALANCE["error"]}
     key = dsh_api_key()
     if not key.startswith("sk-"):
-        _BALANCE.update(at=now, hp=None, yuan=None, error="dsh 还没有密钥")
+        _BALANCE.update(at=now, hp=None, yuan=None, error="还没有密钥，官方余额查不了")
         return {"hp": None, "yuan": None, "error": _BALANCE["error"]}
     request = urllib.request.Request(
         "https://api.deepseek.com/user/balance",
@@ -266,6 +288,187 @@ def safe_join(root: Path, rel: str) -> Path | None:
 
 # 同一时间只跑一轮口播生成。第二轮如果是弹幕轮询，直接空转，避免两段一起说。
 _GEN_LOCK = threading.Lock()
+# 桌宠是单独的透明置顶窗口，不占用这个 HTTP 线程。
+# 名字要和 pet_window.py 里的互斥量一致。一台机器只留一个桌宠。
+_PET_LOCK = threading.Lock()
+_pet_proc = None
+_pet_external_pid = None
+_pet_log = None
+PET_LOG = ROOT / "pet-window.log"
+PET_PID = ROOT / "pet-window.pid"
+PET_MUTEX_NAME = "Local\\ChachaStageDesktopPet"
+
+
+def _pet_mutex_held():
+    """桌宠进程还占着互斥量，说明窗口已经在。"""
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenMutexW.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_wchar_p]
+    kernel.OpenMutexW.restype = ctypes.c_void_p
+    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = kernel.OpenMutexW(0x00100000, 0, PET_MUTEX_NAME)
+    if not handle:
+        return False
+    kernel.CloseHandle(handle)
+    return True
+
+
+def _pid_alive(pid):
+    if not pid or pid == os.getpid():
+        return False
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_uint]
+    kernel.OpenProcess.restype = ctypes.c_void_p
+    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = kernel.OpenProcess(0x1000, 0, int(pid))
+    if not handle:
+        return False
+    kernel.CloseHandle(handle)
+    return True
+
+
+def _pet_process_pids():
+    """本目录正在跑的桌宠进程。服务重启后靠这个把旧窗口认回来。"""
+    script = (
+        "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+        "Where-Object { $_.CommandLine -like $env:CHACHA_PET_CMD } | "
+        "ForEach-Object { $_.ProcessId }"
+    )
+    env = os.environ.copy()
+    env["CHACHA_PET_CMD"] = "*" + str(ROOT / "pet_window.py") + "*"
+    try:
+        out = subprocess.check_output(
+            ["powershell", "-NoProfile", "-Command", script],
+            env=env,
+            text=True,
+            timeout=8,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (subprocess.SubprocessError, OSError):
+        return []
+    pids = []
+    for line in out.split():
+        try:
+            pid = int(line)
+        except ValueError:
+            continue
+        if pid != os.getpid():
+            pids.append(pid)
+    return pids
+
+
+def _stop_pid(pid):
+    if not _pid_alive(pid):
+        return
+    try:
+        os.kill(int(pid), 15)
+    except OSError:
+        return
+
+
+def _read_pid_file():
+    try:
+        return int(PET_PID.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def pet_status():
+    """桌宠进程还在不在。服务自己拉起的、互斥量占着的、认领的旧窗口都算开着。"""
+    proc = _pet_proc
+    if proc is not None and proc.poll() is None:
+        return {"open": True}
+    if _pet_mutex_held() or _pid_alive(_pet_external_pid):
+        return {"open": True}
+    return {"open": False}
+
+
+def _claim_pets(pids):
+    """留一个，多出来的关掉。优先留服务自己拉起的那个。"""
+    global _pet_external_pid
+    if not pids:
+        return False
+    tracked = _pet_proc.pid if _pet_proc is not None and _pet_proc.poll() is None else 0
+    if tracked and tracked in pids:
+        keep = tracked
+    elif _pet_external_pid and int(_pet_external_pid) in pids:
+        keep = int(_pet_external_pid)
+    else:
+        keep = pids[0]
+    _pet_external_pid = keep
+    for extra in pids:
+        if extra != keep:
+            _stop_pid(extra)
+    return True
+
+
+def open_pet():
+    """打开透明置顶浮窗。已经有一个就接着用，不再开第二个。"""
+    global _pet_proc, _pet_log, _pet_external_pid
+    with _PET_LOCK:
+        if pet_status()["open"]:
+            _claim_pets(_pet_process_pids())
+            return {"open": True}
+        pids = _pet_process_pids()
+        if _claim_pets(pids):
+            return {"open": True}
+        _pet_external_pid = None
+        _pet_log = open(PET_LOG, "w", encoding="utf-8")
+        _pet_proc = subprocess.Popen(
+            [sys.executable, "-u", str(ROOT / "pet_window.py")],
+            cwd=str(ROOT),
+            stdout=_pet_log,
+            stderr=subprocess.STDOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        proc = _pet_proc
+    time.sleep(0.8)
+    if proc.poll() is not None:
+        if _pet_mutex_held() or _pet_process_pids():
+            return {"open": True}
+        return {"open": False, "error": _pet_failure()}
+    return {"open": True}
+
+
+def close_pet():
+    """关掉全部桌宠浮窗。直播间页面留着。"""
+    global _pet_proc, _pet_external_pid
+    with _PET_LOCK:
+        targets = set(_pet_process_pids())
+        proc = _pet_proc
+        if proc is not None and proc.poll() is None:
+            targets.add(proc.pid)
+        if _pet_external_pid:
+            targets.add(int(_pet_external_pid))
+        recorded = _read_pid_file()
+        if recorded:
+            targets.add(recorded)
+        for pid in targets:
+            _stop_pid(pid)
+        if proc is not None:
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        _pet_proc = None
+        _pet_external_pid = None
+        if not _pid_alive(_read_pid_file()):
+            try:
+                PET_PID.unlink()
+            except OSError:
+                pass
+    return {"open": False}
+
+
+def _pet_failure():
+    text = ""
+    try:
+        text = PET_LOG.read_text(encoding="utf-8", errors="replace")[-400:]
+    except OSError:
+        text = ""
+    print(text)
+    if "No module named" in text and "webview" in text:
+        return "没有 pywebview，桌宠窗口开不了"
+    return "桌宠窗口没有留下来"
 
 
 class Server(ThreadingHTTPServer):
@@ -295,7 +498,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(hud_status())
             return
         if path == "/api/models":
-            self._json({"models": model_catalog()})
+            self._json({"models": model_catalog(), "picker": picker_label()})
             return
         if path == "/api/catalog":
             body = catalog()
@@ -303,10 +506,15 @@ class Handler(BaseHTTPRequestHandler):
             self._json(body)
             return
         if path == "/api/stage":
-            self._json(public_catalog())
+            query = parse_qs(parsed.query)
+            model_id = (query.get("model") or [""])[0]
+            self._json(public_catalog(model_id or None))
             return
         if path == "/api/dsh":
             self._json(dsh_status())
+            return
+        if path == "/api/pet":
+            self._json(pet_status())
             return
         if path == "/api/prompt":
             from llm import system_prompt
@@ -336,7 +544,7 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/models/"):
             rest = path[len("/models/") :]
             model_id, _, rel = rest.partition("/")
-            spec = MODELS.get(model_id)
+            spec = model_map().get(model_id)
             if spec is None or not rel:
                 self.send_error(404)
                 return
@@ -372,13 +580,25 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/chat":
                 self._json(build_chat(payload))
             elif path == "/api/dsh":
-                if any(name in payload for name in ("key", "apiKey", "api_key", "token")):
-                    self._json({"error": "不要把密钥发给引擎"}, 400)
-                    return
-                folder = save_home(payload.get("home") or "")
-                self._json({"ok": True, "home": str(folder), "dsh": dsh_status()})
+                try:
+                    self._json(save_dsh_settings(payload))
+                except RuntimeError as exc:
+                    self._json({"error": public_error(exc)}, 400)
             elif path == "/api/web-login":
                 self._json({"error": "网页版口播已停用，请使用你自己的 dsh"}, 410)
+            elif path == "/api/models/browse":
+                self._json(browse())
+            elif path == "/api/models/save":
+                saved = save_model(payload.get("path") or "", payload.get("name") or "", payload.get("freedom") is True)
+                self._json({"ok": True, "model": saved, "models": model_catalog()})
+            elif path == "/api/models/freedom":
+                updated = set_freedom(str(payload.get("id") or ""), payload.get("freedom") is True)
+                self._json({"ok": True, "model": updated, "models": model_catalog()})
+            elif path == "/api/models/remove":
+                remove_model(str(payload.get("id") or ""))
+                self._json({"ok": True, "models": model_catalog()})
+            elif path == "/api/pet":
+                self._json(open_pet() if payload.get("open") is True else close_pet())
             elif path == "/api/danmaku/done":
                 feed.finish(payload.get("id"))
                 self._json({"ok": True, "danmaku": feed.status()})
@@ -427,6 +647,7 @@ def main():
     print("dsh         %s" % ("已连接" if llm_ready() else "未配置密钥"))
     print("口播通道    用户的 dsh")
     feed.start()
+    _claim_pets(_pet_process_pids())
     danmaku = feed.status()
     print("弹幕        %s" % danmaku["hint"])
     httpd.serve_forever()

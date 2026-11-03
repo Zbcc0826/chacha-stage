@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """连接用户自己的 DeepSeek Harness。
 
-密钥只来自用户的 dsh：进程环境变量，或 dsh 主目录里的 .env。
-本模块不读取引擎目录下的 keys 文件。
+密钥来自用户自己填写，写入 dsh 主目录的 .env，或来自环境变量。
+本模块不读取引擎目录下的 keys 文件，也不把密钥返回给页面。
 """
 
 from pathlib import Path
 import os
+import re
 
 ROOT = Path(__file__).resolve().parent
 LINK_FILE = ROOT / "dsh.local"
@@ -46,6 +47,43 @@ def save_home(folder: str) -> Path:
     return path
 
 
+def _clean_key(raw: str) -> str:
+    """只接受 DeepSeek 这种 sk- 开头的密钥。错误信息里不带回原文。"""
+    key = str(raw or "").strip()
+    if not re.fullmatch(r"sk-[A-Za-z0-9_\-]{16,180}", key):
+        raise RuntimeError("密钥格式不对。请填写 DeepSeek 官方发给你的密钥。")
+    return key
+
+
+def _write_env_key(path: Path, key: str) -> None:
+    """改 .env 里的 DEEPSEEK_API_KEY，其它行原样留下。"""
+    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+    replaced = False
+    kept = []
+    for line in lines:
+        if line.strip().startswith("DEEPSEEK_API_KEY="):
+            if not replaced:
+                kept.append("DEEPSEEK_API_KEY=" + key)
+                replaced = True
+            continue
+        kept.append(line)
+    if not replaced:
+        if kept and kept[-1] != "":
+            kept.append("")
+        kept.append("DEEPSEEK_API_KEY=" + key)
+    path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+
+
+def save_api_key(raw: str) -> None:
+    """把用户自己的密钥写进 dsh 主目录的 .env。不打印、不回传密钥。"""
+    key = _clean_key(raw)
+    folder = home()
+    if not folder.is_dir():
+        raise RuntimeError("dsh 目录不存在")
+    _write_env_key(folder / ".env", key)
+    os.environ["DEEPSEEK_API_KEY"] = key
+
+
 def api_key() -> str:
     """用户 dsh 的密钥。没有就返回空字符串，不回退到引擎自带的 keys。"""
     env = os.environ.get("DEEPSEEK_API_KEY", "").strip()
@@ -71,5 +109,5 @@ def status() -> dict:
         "homeReady": folder.is_dir(),
         "cliReady": cli.is_file(),
         "keyReady": key_ready(),
-        "hint": "密钥放在你自己的 dsh 环境变量 DEEPSEEK_API_KEY，或 dsh 主目录的 .env 里。引擎不保存、也不使用作者的密钥。",
+        "hint": "血条按官方余额计算，100 元满血。还没有密钥，所以余额查不了。请在下面填你自己的 DeepSeek 密钥。",
     }

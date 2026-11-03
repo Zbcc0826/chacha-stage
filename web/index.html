@@ -3,10 +3,20 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>大肥鱼 · 虚拟主播与桌宠</title>
-  <link rel="stylesheet" href="/style.css" />
+    <title>大肥鱼 · 虚拟主播与桌宠</title>
+    <script>
+      if (new URLSearchParams(location.search).get("surface") === "pet") {
+        document.documentElement.classList.add("desktop-pet");
+      }
+    </script>
+    <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
+  <script>
+    if (document.documentElement.classList.contains("desktop-pet")) {
+      document.body.classList.add("mode-pet");
+    }
+  </script>
   <div id="app">
     <header id="top">
       <div class="brand">
@@ -18,7 +28,7 @@
       </div>
       <div class="mode-switch" role="group" aria-label="舞台模式">
         <button type="button" id="mode-live" aria-pressed="true">直播间</button>
-        <button type="button" id="mode-pet" aria-pressed="false">桌宠</button>
+        <button type="button" id="mode-pet" aria-pressed="false" title="在桌面上打开透明置顶的桌宠">桌宠</button>
       </div>
       <select id="model-pick" aria-label="选择模型"></select>
       <div id="status">正在加载模型…</div>
@@ -86,14 +96,36 @@
           <p id="stage-hint">滚轮缩放 · 拖拽平移 · 桌宠模式点角色打开控件</p>
         </div>
       </div>
-      <aside id="dock">
+      <aside id="dock" data-card="talk" data-live="talk">
+        <nav id="pet-cards" aria-label="桌宠卡片">
+          <button type="button" data-pet-card="talk" aria-pressed="true">说话</button>
+          <button type="button" data-pet-card="pet" aria-pressed="false">桌宠</button>
+          <button type="button" data-pet-card="act" aria-pressed="false">动作</button>
+          <button type="button" data-pet-card="link" aria-pressed="false">连接</button>
+        </nav>
+        <nav id="live-tabs" aria-label="直播间分页">
+          <button type="button" data-live="talk" aria-pressed="true">说话</button>
+          <button type="button" data-live="scene" aria-pressed="false">画面</button>
+          <button type="button" data-live="look" aria-pressed="false">形象</button>
+          <button type="button" data-live="model" aria-pressed="false">模型</button>
+          <button type="button" data-live="link" aria-pressed="false">连接</button>
+          <button type="button" data-live="free" aria-pressed="false">操控</button>
+          <button type="button" data-live="param" aria-pressed="false">参数</button>
+        </nav>
         <section id="dsh-link">
           <h3>连接 dsh</h3>
-          <p class="voice-hint" id="dsh-hint">口播和血条都走你自己的 DeepSeek Harness。密钥不要填到这个页面。</p>
+          <p class="voice-hint" id="dsh-hint">血条按官方余额计算，100 元满血。密钥由你自己填写，只写进 dsh 主目录的 .env，页面上不回显。</p>
           <input id="dsh-home" type="text" spellcheck="false" aria-label="dsh 主目录" />
           <div class="row-actions">
             <button type="button" id="btn-dsh">保存目录</button>
           </div>
+          <label class="dsh-key">DeepSeek 密钥
+            <input id="dsh-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk- 开头，只保存在本机" aria-label="DeepSeek 密钥" />
+          </label>
+          <div class="row-actions">
+            <button type="button" id="btn-dsh-key">保存密钥</button>
+          </div>
+          <p id="credits">软件作者：<a href="https://space.bilibili.com/3382868" target="_blank" rel="noreferrer">早坂茶茶Unofficial</a>。模型：大肥鱼，原画 <a href="https://space.bilibili.com/13737731" target="_blank" rel="noreferrer">神宫凉子</a>，建模 霓虹猫_NeonNeko。向开源社区致敬。</p>
         </section>
         <section id="backdrop">
           <h3>直播间背景</h3>
@@ -109,6 +141,7 @@
           </div>
         </section>
         <section id="talk">
+          <h3>口播</h3>
           <textarea id="talk-text" rows="3" placeholder="输入一句。也可以写标签：&lt;shy&gt;&lt;nod&gt;你好呀">&lt;shy&gt;&lt;nod&gt;你好呀，今天天气真好。</textarea>
           <div class="voice-row">
             <select id="talk-voice" aria-label="音色"></select>
@@ -132,8 +165,20 @@
             <button type="button" id="btn-speak">直接说</button>
           </div>
           <div class="ask-box">
+            <h3>对话</h3>
             <p class="ask-label">发给你的 dsh。回复可以有好几句，会按顺序说出来。</p>
             <label class="check"><input id="opt-live" type="checkbox" checked /> 接弹幕</label>
+            <div class="mic-row">
+              <label class="check"><input id="opt-mic" type="checkbox" /> 语音输入</label>
+              <select id="mic-device" aria-label="麦克风" disabled>
+                <option value="">先打开语音输入</option>
+              </select>
+            </div>
+            <div class="mic-row">
+              <button type="button" id="btn-mic-key">设置按住说话</button>
+              <button type="button" id="btn-mic-key-clear" disabled>清除按键</button>
+            </div>
+            <p id="mic-state" class="voice-hint">语音输入关着。打开后可选一只麦克风，也可以设置按住说话的按键。</p>
             <p id="danmaku-state" class="voice-hint"></p>
             <div class="ask-row">
               <textarea id="ask-text" rows="2" placeholder="输入想让角色回应的话，回车发送"></textarea>
@@ -142,8 +187,7 @@
           </div>
         </section>
         <div class="tools">
-          <input id="search" type="search" placeholder="搜索参数名或 ID" autocomplete="off" />
-          <label class="check"><input id="only-locked" type="checkbox" /> 只看锁定</label>
+          <h3>形象</h3>
           <div class="toggles" id="toggles">
             <label class="check"><input id="opt-physics" type="checkbox" checked /> 物理</label>
             <label class="check"><input id="opt-breath" type="checkbox" checked /> 呼吸</label>
@@ -162,13 +206,26 @@
           <div id="clips-motions"></div>
           <div id="clips-faces"></div>
         </div>
+        <section id="model-library">
+          <h3>模型库</h3>
+          <p class="voice-hint" id="model-library-hint">选择 model3.json 后可以保存多套。勾选高自由度的模型，才会在自由操控打开时允许 dsh 换上。</p>
+          <div class="row-actions">
+            <button type="button" id="btn-browse-model">从资源管理器选择</button>
+          </div>
+          <div id="model-save" hidden>
+            <input id="model-save-name" type="text" maxlength="40" aria-label="模型名称" />
+            <label class="check"><input id="model-save-freedom" type="checkbox" /> 允许高自由度使用</label>
+            <button type="button" id="btn-save-model">保存这套</button>
+          </div>
+          <ul id="model-library-list"></ul>
+        </section>
         <section id="freedom">
           <label class="check"><input id="opt-freedom" type="checkbox" /> 自由操控</label>
           <p class="voice-hint">打开后，dsh 可以用 stage 指令改角色位置、缩放、这些开关、控件位置和一段本页 CSS。关掉后，这类指令会被丢掉。</p>
           <div id="pet-only">
             <button type="button" id="btn-back-live">回到直播间</button>
             <label class="free-row">桌宠大小
-              <input id="pet-scale" type="range" min="0.25" max="4" step="0.05" value="1" />
+              <input id="pet-scale" type="range" min="0.6" max="4" step="0.05" value="1" />
             </label>
           </div>
           <div id="freedom-panel" hidden>
@@ -182,9 +239,13 @@
             <textarea id="user-css" rows="4" spellcheck="false" placeholder="只写样式。例如 #subtitle { color: #fff; }"></textarea>
           </div>
         </section>
-        <div id="groups"></div>
-        <p id="dock-note">表情和短动作按每一句来。模型目录里的动作、表情会列在上面，也会写进口播指令。放松、侧耳这类整体动态叫 vibe，会留到下一轮。</p>
-        <p id="credits">软件作者：<a href="https://space.bilibili.com/3382868" target="_blank" rel="noreferrer">早坂茶茶Unofficial</a>。模型：大肥鱼，原画 <a href="https://space.bilibili.com/13737731" target="_blank" rel="noreferrer">神宫凉子</a>，建模 霓虹猫_NeonNeko。向开源社区致敬。</p>
+        <div id="param-pane">
+          <h3>参数</h3>
+          <input id="search" type="search" placeholder="搜索参数名或 ID" autocomplete="off" />
+          <label class="check"><input id="only-locked" type="checkbox" /> 只看锁定</label>
+          <div id="groups"></div>
+          <p id="dock-note">表情和短动作按每一句来。模型目录里的动作、表情会列在上面，也会写进口播指令。放松、侧耳这类整体动态叫 vibe，会留到下一轮。</p>
+        </div>
       </aside>
     </main>
   </div>

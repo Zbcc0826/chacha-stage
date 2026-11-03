@@ -45,6 +45,7 @@
       "description": "只有页面打开「自由操控」时才会执行",
       "properties": {
         "mode": { "enum": ["live", "pet"] },
+        "modelId": { "type": "string", "description": "只能是高自由度允许的模型 id" },
         "model": {
           "type": "object",
           "properties": {

@@ -15,6 +15,11 @@
 .voice-slider input[type="range"] { width: 78px; accent-color: var(--tea); }
 .voice-hint { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
 .ask-box { margin-top: 10px; }
+.mic-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.mic-row select { flex: 1 1 180px; min-width: 0; }
+.mic-row select:disabled,
+.mic-row button:disabled { opacity: 0.55; cursor: default; }
+#btn-mic-key[aria-pressed="true"] { border-color: var(--tea); color: var(--tea); }
 .ask-label { margin: 0 0 6px; color: var(--muted); font-size: 12px; line-height: 1.4; }
 .ask-row { display: flex; gap: 8px; align-items: stretch; }
 .ask-row textarea { flex: 1; min-height: 52px; }
@@ -22,13 +27,17 @@
 #btn-web-login { white-space: nowrap; }
 #btn-speak:disabled, #btn-ask:disabled { opacity: 0.55; }
 
+/* 直播间右侧整列滚动。子项不压缩，多出来的部分在这一列里上下滚。 */
 #dock {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: var(--panel);
   border-left: 1px solid var(--line);
 }
+#dock > * { flex-shrink: 0; }
 .tools { padding: 12px 12px 8px; border-bottom: 1px solid var(--line); }
 #search, button {
   background: var(--panel-2);

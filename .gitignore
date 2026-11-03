@@ -7,9 +7,12 @@ github-key.txt
 audio/
 browser-profile/
 models/
+models.local.json
 .harness-channel
 .harness-session
 .vibe
 __pycache__/
 *.pyc
 _extract_model.py
+pet-window.log
+pet-window.pid

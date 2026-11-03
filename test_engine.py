@@ -43,7 +43,7 @@ class EngineTests(unittest.TestCase):
 
     def test_public_tree_has_no_secrets(self):
         ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
-        for name in ("keys", "bili.local", "dsh.local", "models/", "github-key.txt", ".env"):
+        for name in ("keys", "bili.local", "dsh.local", "models/", "models.local.json", "github-key.txt", ".env"):
             self.assertIn(name, ignore)
         leaked = []
         ignored_names = {"keys", "bili.local", "dsh.local", "github-key.txt"}
@@ -64,6 +64,53 @@ class EngineTests(unittest.TestCase):
             if SECRET.search(text):
                 leaked.append(str(path.relative_to(ROOT)))
         self.assertEqual(leaked, [])
+
+    def test_user_key_file_keeps_other_lines(self):
+        import tempfile
+        import dsh_link
+        folder = Path(tempfile.mkdtemp())
+        env = folder / ".env"
+        env.write_text("OTHER=1\nDEEPSEEK_API_KEY=old\nDEEPSEEK_API_KEY=again\n", encoding="utf-8")
+        sample = "sk-" + ("b" * 24)
+        dsh_link._write_env_key(env, sample)
+        text = env.read_text(encoding="utf-8")
+        self.assertIn("OTHER=1", text)
+        self.assertEqual(text.count("DEEPSEEK_API_KEY="), 1)
+        self.assertTrue(text.strip().endswith(sample))
+        with self.assertRaises(RuntimeError) as caught:
+            dsh_link._clean_key("nope")
+        self.assertNotIn("nope", str(caught.exception))
+        self.assertNotIn("key", dsh_link.status())
+
+    def test_freedom_model_allow(self):
+        blocked = engine_model.clean_stage({"modelId": "other-model", "mode": "live"}, {"deepseek-chan"})
+        self.assertNotIn("modelId", blocked)
+        allowed = engine_model.clean_stage({"modelId": "deepseek-chan"}, {"deepseek-chan"})
+        self.assertEqual(allowed["modelId"], "deepseek-chan")
+
+    def test_save_user_model_respects_freedom(self):
+        import tempfile
+        folder = Path(tempfile.mkdtemp())
+        model = folder / "Demo.model3.json"
+        model.write_text(
+            '{"Version":3,"FileReferences":{"Moc":"Demo.moc3"}}',
+            encoding="utf-8",
+        )
+        old = engine_model.LIBRARY
+        engine_model.LIBRARY = folder / "library.json"
+        try:
+            saved = engine_model.save_model(model, "演示", False)
+            self.assertFalse(saved["freedom"])
+            blocked = engine_model.clean_stage({"modelId": saved["id"]}, engine_model.freedom_ids())
+            self.assertNotIn("modelId", blocked or {})
+            engine_model.set_freedom(saved["id"], True)
+            self.assertIn(saved["id"], engine_model.freedom_ids())
+            opened = engine_model.clean_stage({"modelId": saved["id"]}, engine_model.freedom_ids())
+            self.assertEqual(opened["modelId"], saved["id"])
+            engine_model.remove_model(saved["id"])
+            self.assertNotIn(saved["id"], {item["id"] for item in engine_model.load_library()})
+        finally:
+            engine_model.LIBRARY = old
 
 
 if __name__ == "__main__":
