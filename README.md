@@ -37,7 +37,7 @@ dsh --profile headless --dump-config
 
 ## 模型
 
-内置角色是大肥鱼。原画 [神宫凉子](https://space.bilibili.com/13737731)，建模霓虹猫_NeonNeko。
+测试用的内置支持角色是大肥鱼。原画 [神宫凉子](https://space.bilibili.com/13737731)，建模霓虹猫_NeonNeko。
 
 大肥鱼的模型文件按作者的使用须知，不放进这个仓库。请从作者的原始发布页取得压缩包，解压到 `models/deepseek-chan/`，并保留原来的文件名。引擎会读取目录里的 `.motion3.json` 和 `.exp3.json`，把它们登记成口播可以选的动作和表情。
 
