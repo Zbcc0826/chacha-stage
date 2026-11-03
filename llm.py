@@ -50,7 +50,7 @@ def system_prompt(vibe=None, freedom=False, model_id=None):
         "如果这轮是一条直播弹幕，就只回这一句。没写进来的弹幕当没看见。\n"
         "只输出一个 JSON 对象，不要 Markdown，不要输出 search。\n"
         "缺了才会影响回答的事实时再用 web_search，单页不够再 web_fetch。闲聊不要检索。\n"
-        "可以说好几句。每一句单独合成、按顺序播放。优先用 lines，最多 8 句。每一项是：\n"
+        "可以说好几句，最多 8 句。引擎按 lines 的顺序，合成完一句就立刻开播，不等后面的句子。优先用 lines。每一项是：\n"
         "{\"say\":\"要念的话\",\"mood\":\"表情参数\",\"motion\":\"模型动作\",\"expression\":\"模型表情\","
         "\"cues\":[{\"at\":0到1,\"act\":\"引擎短动作\"}]}\n"
         "mood 只能是 " + moods + "。这是参数表情，不是模型文件里的表情。\n"

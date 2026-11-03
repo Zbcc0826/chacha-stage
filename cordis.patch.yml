@@ -1,0 +1,5 @@
+# 组合包层。profile 把这一层接在 @deepseek-ai/dsh-base 之后。
+# 插件行按包名引用，安装后由 Node 解析，不写本机路径。
+- insert:
+    - id: chacha-stage
+      name: dsh-chacha-stage

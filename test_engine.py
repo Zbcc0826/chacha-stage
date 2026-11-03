@@ -203,5 +203,32 @@ class TalkHookTests(unittest.TestCase):
         self.assertIn("false", self.pet._PAGE_QUEUE[0][1])
 
 
+class CueTests(unittest.TestCase):
+    def setUp(self):
+        import server
+        self.server = server
+        self.old_seq = server._ACT_SEQ
+        self.old_body = server._ACT_BODY
+        self.old_acts = list(server._ACTS)
+        server._ACT_SEQ = 0
+        server._ACT_BODY = None
+        server._ACTS = []
+
+    def tearDown(self):
+        self.server._ACT_SEQ = self.old_seq
+        self.server._ACT_BODY = self.old_body
+        self.server._ACTS = self.old_acts
+
+    def test_unread_lines_stay_in_order(self):
+        first = self.server.publish_act({"say": "第一句"})
+        second = self.server.publish_act({"say": "第二句"})
+        got = self.server.read_act(0)
+        self.assertEqual([item["say"] for item in got["batch"]], ["第一句", "第二句"])
+        self.assertEqual(got["actId"], second["actId"])
+        idle = self.server.read_act(second["actId"])
+        self.assertTrue(idle.get("idle"))
+        self.assertEqual(first["actId"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,36 @@
+{
+  "name": "dsh-chacha-stage",
+  "version": "0.1.0",
+  "description": "Live2D stage and desktop pet that a dsh session can speak through.",
+  "type": "module",
+  "main": "plugin/index.js",
+  "files": [
+    "plugin/index.js",
+    "plugin/icon.svg",
+    "cordis.patch.yml",
+    "locale",
+    "docs"
+  ],
+  "exports": {
+    ".": "./plugin/index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./plugin/icon.svg"
+  },
+  "engines": {
+    "dsh": ">=0.2.0 <0.3.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "*"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zbcc0826/chacha-stage.git"
+  }
+}

@@ -137,6 +137,7 @@ def build_chat(payload):
             _GEN_LOCK.release()
         raise RuntimeError("没有要问的内容")
     vibe = load_vibe()
+    published = []
     try:
         try:
             script, channel = ask_harness(
@@ -150,8 +151,8 @@ def build_chat(payload):
         except HarnessError as exc:
             raise RuntimeError(str(exc))
         speak = payload.get("speak", True) is not False
-        lines = []
-        for line in script["lines"]:
+        joined = []
+        for index, line in enumerate(script["lines"]):
             performance = build_performance({
                 "text": line["say"],
                 "mood": line.get("mood"),
@@ -163,32 +164,46 @@ def build_chat(payload):
             }, with_audio=speak)
             if line.get("vibe"):
                 performance["vibe"] = public_vibe(line["vibe"])
+            elif index == 0:
+                performance["vibe"] = public_vibe(script["vibe"])
             if line.get("motion"):
                 performance["motion"] = line["motion"]
             if line.get("expression"):
                 performance["expression"] = line["expression"]
-            lines.append(performance)
+            if index == 0 and script.get("stage"):
+                performance["stage"] = script["stage"]
+            if index == 0 and heard:
+                performance["heard"] = heard
+                performance["danmaku"] = feed.status()
+            performance["lineIndex"] = index
+            performance["lineCount"] = len(script["lines"])
+            published.append(publish_act(performance))
+            joined.append(performance.get("say") or line["say"])
+            print("已交出第 %d/%d 句" % (index + 1, len(script["lines"])), flush=True)
         save_vibe(script["endVibe"])
-        # 顶层保留第一句，旧页面至少能播出开头；新页面按 lines 依次播。
-        combined = dict(lines[0])
-        combined["lines"] = lines
-        combined["say"] = "\n".join(item["say"] for item in lines)
-        combined["vibe"] = public_vibe(script["vibe"])
-        combined["reply"] = script
-        combined["channel"] = channel
-        combined["via"] = "harness"
-        if script.get("stage"):
-            combined["stage"] = script["stage"]
+        say = "\n".join(item for item in joined if item)
         if heard:
-            combined["heard"] = heard
-            combined["danmaku"] = feed.status()
-            feed.remember("danmaku", heard["msg"], combined.get("say") or "", heard.get("uname") or "")
+            feed.remember("danmaku", heard["msg"], say, heard.get("uname") or "")
         elif user_text:
-            feed.remember("ask", user_text, combined.get("say") or "", "你")
-        return combined
+            feed.remember("ask", user_text, say, "你")
+        # 句子已经逐句交出去了。这里只回报文本，避免整包再播一遍。
+        return {
+            "streamed": True,
+            "idle": False,
+            "say": say,
+            "actIds": [item.get("actId") for item in published],
+            "lineCount": len(published),
+            "vibe": public_vibe(script["vibe"]),
+            "reply": script,
+            "channel": channel,
+            "via": "harness",
+            "stage": script.get("stage"),
+            "heard": heard,
+            "danmaku": feed.status() if heard else None,
+        }
     except Exception as exc:
         print("口播失败:", public_error(exc), flush=True)
-        if claimed:
+        if claimed and not published:
             feed.release(claimed)
         raise
     finally:
@@ -288,14 +303,15 @@ def safe_join(root: Path, rel: str) -> Path | None:
 
 # 同一时间只跑一轮口播生成。第二轮如果是弹幕轮询，直接空转，避免两段一起说。
 _GEN_LOCK = threading.Lock()
-# 最近一次口播。桌宠来取，不占用生成锁。直播间和桌宠不是同一个浏览器，广播通道传不过去。
+# 最近几句口播。桌宠和直播间轮询来取。只留最后一句的话，前面已经合成好的句子会丢。
 _ACT_GUARD = threading.Lock()
 _ACT_SEQ = 0
 _ACT_BODY = None
+_ACTS = []
 
 
 def publish_act(body):
-    """给这一轮口播编号。空转结果不占号。"""
+    """给这一句口播编号。空转结果不占号。"""
     global _ACT_SEQ, _ACT_BODY
     if not isinstance(body, dict) or body.get("idle"):
         return body
@@ -303,20 +319,25 @@ def publish_act(body):
         _ACT_SEQ += 1
         stored = dict(body)
         stored["actId"] = _ACT_SEQ
+        _ACTS.append(stored)
+        del _ACTS[:-16]
         _ACT_BODY = stored
         return stored
 
 
 def read_act(after):
-    """桌宠轮询。没有更新就返回空转，不把整段口播再发一遍。"""
+    """取出还没播过的句子。一句就原样返回，多句按顺序装在 batch 里。"""
     try:
         seen = int(after)
     except (TypeError, ValueError):
         seen = 0
     with _ACT_GUARD:
-        if _ACT_BODY is None or _ACT_SEQ <= seen:
+        pending = [item for item in _ACTS if int(item.get("actId") or 0) > seen]
+        if not pending:
             return {"idle": True, "actId": _ACT_SEQ}
-        return _ACT_BODY
+        if len(pending) == 1:
+            return pending[0]
+        return {"batch": pending, "actId": pending[-1]["actId"]}
 
 
 # 直播间和桌宠不是同一个浏览器，本地存储互不相通。形象和语音开关放在服务里共用一份。
@@ -742,7 +763,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/perform":
                 self._json(publish_act(build_performance(payload, payload.get("speak", True) is not False)))
             elif path == "/api/chat":
-                self._json(publish_act(build_chat(payload)))
+                result = build_chat(payload)
+                if isinstance(result, dict) and (result.get("idle") or result.get("streamed")):
+                    self._json(result)
+                else:
+                    self._json(publish_act(result))
             elif path == "/api/dsh":
                 try:
                     self._json(save_dsh_settings(payload))

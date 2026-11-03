@@ -1114,7 +1114,11 @@ function petIsShowing() {
 
 /** 同一轮口播只播一次。桌宠开着时，嘴型、动作和声音只在桌宠窗口播。 */
 function deliverSpeech(data) {
-  if (!data || data.idle) return;
+  if (!data || data.idle || data.streamed) return;
+  if (Array.isArray(data.batch)) {
+    for (const item of data.batch) deliverSpeech(item);
+    return;
+  }
   if (data.actId != null) {
     const id = Number(data.actId);
     if (speech.seenActs.has(id)) return;
@@ -1324,17 +1328,15 @@ if (window.chachaDesktopPet) {
   window.setInterval(beat, 1000);
 }
 
-if (window.chachaDesktopPet) {
-  window.setInterval(() => {
-    if (speech.cueBusy) return;
-    speech.cueBusy = true;
-    fetch("/api/cue?after=" + (speech.actId || 0))
-      .then((response) => response.json())
-      .then((data) => deliverSpeech(data))
-      .catch(() => {})
-      .finally(() => { speech.cueBusy = false; });
-  }, 400);
-}
+window.setInterval(() => {
+  if (speech.cueBusy) return;
+  speech.cueBusy = true;
+  fetch("/api/cue?after=" + (speech.actId || 0))
+    .then((response) => response.json())
+    .then((data) => deliverSpeech(data))
+    .catch(() => {})
+    .finally(() => { speech.cueBusy = false; });
+}, 400);
 
 /** 播队列里的一句。说完再叫下一句，表情从上一句的脸上缓过去。 */
 function startLine(token, index, reply) {
@@ -2222,8 +2224,8 @@ function bindTalk() {
     speak.disabled = true;
     speech.busy = true;
     speech.notice = "";
-    $("status").textContent = "dsh 正在写下一句…";
-    setCue("dsh 正在写下一句…");
+    $("status").textContent = "dsh 正在写，写完一句就念…";
+    setCue("dsh 正在写，写完一句就念…");
     try {
       const data = await postJson("/api/chat", {
         text,

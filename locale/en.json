@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Stage and desktop pet",
+    "description": "Speaks through the local Live2D stage. Each sentence is synthesized as soon as it is ready.",
+    "detail": "docs/DETAIL.md"
+  }
+}
