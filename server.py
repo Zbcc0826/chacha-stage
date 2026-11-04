@@ -19,7 +19,7 @@ import time
 import urllib.request
 import uuid
 
-from danmaku import feed, redact, save_live_key
+from danmaku import feed
 from dsh_link import api_key as dsh_api_key, home as dsh_home, key_ready, save_api_key, save_home, status as dsh_status
 from engine_model import (
     browse,
@@ -55,6 +55,12 @@ MIME = {
     ".png": "image/png",
     ".moc3": "application/octet-stream",
     ".mp3": "audio/mpeg",
+    ".flac": "audio/flac",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".ogg": "audio/ogg",
+    ".lrc": "text/plain; charset=utf-8",
+    ".txt": "text/plain; charset=utf-8",
 }
 
 
@@ -64,8 +70,8 @@ def model_catalog() -> list:
 
 
 def public_error(exc):
-    """错误信息可以回给页面，但不能带上密钥或直播身份码。"""
-    text = redact(str(exc)).replace("\n", " ")
+    """错误信息可以回给页面，但不能带上密钥。"""
+    text = str(exc).replace("\n", " ")
     if "sk-" in text:
         return "上游请求失败"
     return text[:300] or "请求失败"
@@ -112,23 +118,54 @@ def build_performance(payload, with_audio):
 def build_chat(payload):
     """让 Harness 写一轮口播。多句按顺序合成，整体动态从上一次接着。
 
-    live 为真且没有手打内容时，先挑一条弹幕再生成。没有可回的弹幕就空转，不叫模型。
+    live 为真且没有手打内容时，先挑一条弹幕再生成。
+    没有弹幕时：filler 为真则走冷场闲聊；否则空转，不叫模型。
     """
+    from llm import filler_prompt
+
     live = payload.get("live") is True
+    want_filler = payload.get("filler") is True
     user_text = str(payload.get("text") or "").strip()
     claimed = None
     heard = None
     held = False
-    if live and not user_text:
+    is_filler = False
+    # 自动直播（弹幕/闲聊）必须先点「开始」；手打提问不受影响。
+    auto_live = live and not user_text
+    live_gen = None
+    if auto_live:
+        state = live_session_state()
+        if not state["liveSession"]:
+            return {"idle": True, "danmaku": feed.status(), **state}
+        live_gen = state["liveGen"]
         if not _GEN_LOCK.acquire(blocking=False):
-            return {"idle": True, "danmaku": feed.status()}
+            return {"idle": True, "danmaku": feed.status(), **state}
         held = True
         claimed = feed.claim()
         if claimed is None:
-            _GEN_LOCK.release()
-            return {"idle": True, "danmaku": feed.status()}
-        heard = {"id": claimed["id"], "uname": claimed["uname"], "msg": claimed["msg"]}
-        user_text = feed.prompt_for(claimed)
+            if not want_filler:
+                _GEN_LOCK.release()
+                return {"idle": True, "danmaku": feed.status(), **live_session_state()}
+            # 无弹幕：用闲聊提示撑场，像正常直播不冷场。
+            is_filler = True
+            # 闲聊要礼物最快 10 分钟一次；冷却中明确禁止提舰长/盲盒。
+            allow_gift = feed.can_filler_gift_ask()
+            user_text = (
+                filler_prompt(allow_gift_ask=allow_gift, context=feed.context_block())
+                + "\n"
+                + feed._fresh_line_rule("闲聊")
+            )
+            if allow_gift:
+                # 本轮已放出要礼物许可，立刻进入冷却，避免连着几轮闲聊都要。
+                feed.note_filler_gift_ask()
+        else:
+            heard = {
+                "id": claimed["id"],
+                "uname": claimed["uname"],
+                "msg": claimed["msg"],
+                "kind": claimed.get("kind") or "danmaku",
+            }
+            user_text = feed.prompt_for(claimed)
     else:
         _GEN_LOCK.acquire()
         held = True
@@ -136,6 +173,13 @@ def build_chat(payload):
         if held:
             _GEN_LOCK.release()
         raise RuntimeError("没有要问的内容")
+    # 控制台手打 / 主播本人弹幕：完全服从指示。
+    from danmaku import is_nonoko_name, owner_obey_block
+    owner_cmd = (not auto_live) or (bool(heard) and is_nonoko_name(heard.get("uname")))
+    # 上下文只记原始指示，不把服从规则整段塞进去。
+    ask_raw = user_text if (not auto_live) else ""
+    if owner_cmd and not auto_live:
+        user_text = owner_obey_block() + "控制台主播指示：\n" + user_text
     vibe = load_vibe()
     published = []
     try:
@@ -147,12 +191,19 @@ def build_chat(payload):
                 vibe,
                 payload.get("freedom") is True,
                 str(payload.get("model") or ""),
+                owner=owner_cmd,
             )
         except HarnessError as exc:
             raise RuntimeError(str(exc))
         speak = payload.get("speak", True) is not False
         joined = []
         for index, line in enumerate(script["lines"]):
+            # 停播后作废本轮剩余直播句，不再继续合成/交出。
+            if auto_live:
+                now = live_session_state()
+                if (not now["liveSession"]) or (live_gen is not None and now["liveGen"] != live_gen):
+                    print("开播已停，丢掉后续直播句", flush=True)
+                    break
             performance = build_performance({
                 "text": line["say"],
                 "mood": line.get("mood"),
@@ -172,9 +223,22 @@ def build_chat(payload):
                 performance["expression"] = line["expression"]
             if index == 0 and script.get("stage"):
                 performance["stage"] = script["stage"]
-            if index == 0 and heard:
+            if heard:
                 performance["heard"] = heard
-                performance["danmaku"] = feed.status()
+                performance["kind"] = heard.get("kind") or "danmaku"
+                if index == 0:
+                    performance["danmaku"] = feed.status()
+                # 普通弹幕才复述后停顿。礼物致谢和进房欢迎直接说，不装作思考。
+                if heard.get("kind") not in ("gift", "enter"):
+                    if index == 0 and len(script["lines"]) > 1:
+                        performance["thinkAfter"] = True
+                    if index == 0:
+                        performance["echo"] = True
+            if is_filler:
+                performance["filler"] = True
+            if auto_live and live_gen is not None:
+                performance["liveGen"] = live_gen
+                performance["autoLive"] = True
             performance["lineIndex"] = index
             performance["lineCount"] = len(script["lines"])
             published.append(publish_act(performance))
@@ -182,14 +246,30 @@ def build_chat(payload):
             print("已交出第 %d/%d 句" % (index + 1, len(script["lines"])), flush=True)
         save_vibe(script["endVibe"])
         say = "\n".join(item for item in joined if item)
-        if heard:
+        if heard and published:
             feed.remember("danmaku", heard["msg"], say, heard.get("uname") or "")
-        elif user_text:
-            feed.remember("ask", user_text, say, "你")
+            # 生成成功即记已回，防止同内容再被 claim；播完仍由前端 /danmaku/done 收尾。
+            feed.note_replied(heard["id"])
+            # 弹幕优先：丢掉自己闲聊话题，稍后前端再等 10 秒看还有没有弹幕。
+            feed.drop_self_topic()
+            # 滚入上下文：弹幕原文 + 本次回复。
+            feed.note_context(heard.get("kind") or "danmaku", heard.get("uname"), heard.get("msg"), say)
+            # 记下本轮台词，欢迎/谢礼/弹幕都不再复用旧话。
+            feed.note_said(say)
+        elif is_filler and published:
+            feed.remember("self", say, say, "蕾蕾")
+            feed.note_context("filler", "蕾蕾", "（闲聊）", say)
+            feed.note_said(say)
+        elif ask_raw and not auto_live:
+            feed.remember("ask", ask_raw, say, "你")
+            # 控制台指示也进上下文，方便后续弹幕理解。
+            feed.note_context("ask", "主播", ask_raw[:120], say)
+            feed.note_said(say)
         # 句子已经逐句交出去了。这里只回报文本，避免整包再播一遍。
         return {
             "streamed": True,
-            "idle": False,
+            "idle": not published,
+            "filler": is_filler,
             "say": say,
             "actIds": [item.get("actId") for item in published],
             "lineCount": len(published),
@@ -200,6 +280,7 @@ def build_chat(payload):
             "stage": script.get("stage"),
             "heard": heard,
             "danmaku": feed.status() if heard else None,
+            **live_session_state(),
         }
     except Exception as exc:
         print("口播失败:", public_error(exc), flush=True)
@@ -308,6 +389,29 @@ _ACT_GUARD = threading.Lock()
 _ACT_SEQ = 0
 _ACT_BODY = None
 _ACTS = []
+# 顶栏「开始/停止」：只有开播后才找话题、回弹幕、闲聊；停止后作废进行中的直播口播。
+_LIVE_LOCK = threading.Lock()
+_LIVE_ON = False
+_LIVE_GEN = 0
+
+
+def live_session_state():
+    with _LIVE_LOCK:
+        return {"liveSession": _LIVE_ON, "liveGen": _LIVE_GEN}
+
+
+def set_live_session(on):
+    """开播/停播。停播时递增 liveGen，让还在合成的直播句全部作废。"""
+    global _LIVE_ON, _LIVE_GEN
+    with _LIVE_LOCK:
+        want = bool(on)
+        if want:
+            _LIVE_ON = True
+        else:
+            if _LIVE_ON:
+                _LIVE_GEN += 1
+            _LIVE_ON = False
+        return {"liveSession": _LIVE_ON, "liveGen": _LIVE_GEN}
 
 
 def publish_act(body):
@@ -662,14 +766,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         if path == "/api/status":
-            self._json({
+            body = {
                 "models": model_catalog(),
                 "llm": "deepseek",
                 "llmReady": llm_ready(),
                 "dsh": dsh_status(),
                 "vibe": public_vibe(load_vibe()),
                 "danmaku": feed.status(),
-            })
+            }
+            body.update(live_session_state())
+            self._json(body)
             return
         if path == "/api/hud":
             self._json(hud_status())
@@ -793,11 +899,20 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/danmaku/done":
                 feed.finish(payload.get("id"))
                 self._json({"ok": True, "danmaku": feed.status()})
-            elif path == "/api/bili":
-                if "key" not in payload:
-                    raise RuntimeError("没有要保存的内容")
-                save_live_key(payload.get("key") or "")
-                self._json({"ok": True, "danmaku": feed.status()})
+            elif path == "/api/danmaku/fresh":
+                # 开播/刷新：丢掉板上旧待回，只接这之后的新弹幕。
+                self._json({"ok": True, "danmaku": feed.discard_pending()})
+            elif path == "/api/visits/clear":
+                # 清空进房欢迎记录（uname 是否来过）。
+                self._json(feed.clear_visits())
+            elif path == "/api/session":
+                # 顶栏开始/停止：开关自动直播（弹幕回复 + 找话题闲聊）。
+                state = set_live_session(payload.get("live") is True)
+                if not state["liveSession"]:
+                    feed.discard_pending()
+                state["ok"] = True
+                state["danmaku"] = feed.status()
+                self._json(state)
             else:
                 self.send_error(404)
         except Exception as exc:
@@ -825,6 +940,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-cache")
+        # 给 MediaElementSource 用：带 CORS 才不会把口播接成静音。
+        if mime.startswith("audio/"):
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cross-Origin-Resource-Policy", "cross-origin")
         self.end_headers()
         self.wfile.write(data)
 
@@ -834,12 +953,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    # 没有现成模型时也允许启动，方便在页面「模型库」里导入本机 Live2D。
     ready = [item["name"] for item in model_catalog() if item["ready"]]
-    if not ready:
-        raise SystemExit("没有可用的 Live2D 模型")
     httpd = Server((HOST, PORT), Handler)
     print("大肥鱼引擎  http://%s:%d/" % (HOST, PORT))
-    print("模型        %s" % "、".join(ready))
+    print("模型        %s" % ("、".join(ready) if ready else "无（请到页面模型库导入 model3.json）"))
     print("dsh         %s" % ("已连接" if llm_ready() else "未配置密钥"))
     print("口播通道    用户的 dsh")
     feed.start()

@@ -5,9 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>大肥鱼 · 虚拟主播与桌宠</title>
     <script>
-      if (new URLSearchParams(location.search).get("surface") === "pet") {
-        document.documentElement.classList.add("desktop-pet");
-      }
+      (function () {
+        var surface = new URLSearchParams(location.search).get("surface");
+        if (surface === "pet") document.documentElement.classList.add("desktop-pet");
+        // 纯直播画面页：全屏舞台，给 OBS / 投屏。
+        if (surface === "stage") document.documentElement.classList.add("stage-cast");
+      })();
     </script>
     <link rel="stylesheet" href="/style.css" />
 </head>
@@ -15,6 +18,9 @@
   <script>
     if (document.documentElement.classList.contains("desktop-pet")) {
       document.body.classList.add("mode-pet");
+    }
+    if (document.documentElement.classList.contains("stage-cast")) {
+      document.body.classList.add("stage-cast");
     }
   </script>
   <div id="app">
@@ -31,11 +37,16 @@
         <button type="button" id="mode-pet" aria-pressed="false" title="在桌面上打开透明置顶的桌宠">桌宠</button>
       </div>
       <select id="model-pick" aria-label="选择模型"></select>
+      <button type="button" id="btn-session" class="session-btn" aria-pressed="false">开始</button>
+      <button type="button" id="btn-stage-full" class="session-btn" aria-pressed="false" title="直播画面全屏">全屏</button>
+      <button type="button" id="btn-audio-mute" class="session-btn audio-mute-btn" aria-pressed="false" title="开关口播声音">声音开</button>
+      <button type="button" id="btn-stage-copy" class="session-btn" title="复制全屏直播画面链接">复制画面链接</button>
       <div id="status">正在加载模型…</div>
       <div id="llm" class="pill">DeepSeek …</div>
     </header>
     <main>
       <div id="stage-column">
+        <button type="button" id="btn-stage-full-float" class="stage-full-btn" title="直播画面全屏">全屏</button>
         <div id="stage-frame">
           <aside id="hud-rail" aria-label="状态栏">
             <label class="check hud-switch"><input id="hud-show" type="checkbox" checked /> 状态栏</label>
@@ -125,17 +136,16 @@
           <div class="row-actions">
             <button type="button" id="btn-dsh-key">保存密钥</button>
           </div>
-          <label class="dsh-key">直播身份码
-            <input id="live-key" type="password" autocomplete="off" spellcheck="false" placeholder="只保存在本机，页面不回显" aria-label="直播身份码" />
-          </label>
-          <div class="row-actions">
-            <button type="button" id="btn-live-key">保存身份码</button>
-          </div>
-          <p class="voice-hint" id="live-key-hint">接弹幕用你自己的身份码，按密钥保存。留空再保存会清掉本机这份码。</p>
           <p id="credits">软件作者：<a href="https://space.bilibili.com/3382868" target="_blank" rel="noreferrer">早坂茶茶Unofficial</a>。模型：大肥鱼，原画 <a href="https://space.bilibili.com/13737731" target="_blank" rel="noreferrer">神宫凉子</a>，建模 霓虹猫_NeonNeko。向开源社区致敬。</p>
         </section>
         <section id="backdrop">
           <h3>直播间背景</h3>
+          <p class="voice-hint">全屏画面是另一个网址，只显示直播舞台；控制仍在本页点「开始」。OBS 浏览器源可直接填下面链接。</p>
+          <div class="row-actions">
+            <button type="button" id="btn-stage-open">打开全屏画面</button>
+            <button type="button" id="btn-stage-copy-dock">复制画面链接</button>
+          </div>
+          <input id="stage-cast-url" type="text" readonly spellcheck="false" aria-label="全屏画面链接" />
           <div id="bg-swatches" class="swatches"></div>
           <div class="bg-row">
             <label>色盘 <input id="bg-color" type="color" value="#ff00ff" /></label>
@@ -173,8 +183,11 @@
           </div>
           <div class="ask-box">
             <h3>对话</h3>
-            <p class="ask-label">发给你的 dsh。回复可以有好几句，会按顺序说出来。</p>
-            <label class="check"><input id="opt-live" type="checkbox" checked /> 接弹幕</label>
+            <p class="ask-label">发给你的 dsh。回复可以有好几句，会按顺序说出来。顶栏「开始」会打开全套流程；这里的接弹幕与之一致。</p>
+            <label class="check"><input id="opt-live" type="checkbox" /> 接弹幕</label>
+            <div class="row-actions">
+              <button type="button" id="btn-clear-visits" title="清空进房欢迎记录，之后再进都当第一次">清除进房记录</button>
+            </div>
             <div class="mic-row">
               <label class="check"><input id="opt-mic" type="checkbox" /> 语音输入</label>
               <select id="mic-device" aria-label="麦克风" disabled>
@@ -199,7 +212,7 @@
             <label class="check"><input id="opt-physics" type="checkbox" checked /> 物理</label>
             <label class="check"><input id="opt-breath" type="checkbox" checked /> 呼吸</label>
             <label class="check"><input id="opt-sway" type="checkbox" /> 摆头</label>
-            <label class="check"><input id="opt-blink" type="checkbox" /> 眨眼</label>
+            <label class="check"><input id="opt-blink" type="checkbox" checked /> 眨眼</label>
             <label class="check"><input id="opt-mouse" type="checkbox" /> 鼠标注视</label>
           </div>
           <div class="row-actions">
@@ -262,7 +275,8 @@
   <script src="/vendor/live2dcubismcore.min.js"></script>
   <script src="/vendor/pixi.min.js"></script>
   <script src="/vendor/cubism4.min.js"></script>
-  <script src="/app.js"></script>
-  <script src="/engine.js"></script>
+  <!-- v= 用于冲掉浏览器缓存，改逻辑时顺手加一版号 -->
+  <script src="/app.js?v=stage-cast1"></script>
+  <script src="/engine.js?v=stage-cast1"></script>
 </body>
 </html>

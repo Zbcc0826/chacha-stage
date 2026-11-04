@@ -250,19 +250,29 @@ def answer_messages(raw):
     return _forward(raw)
 
 
-def _task(user_text, lang, vibe="relax", freedom=False, model_id=""):
-    """交给持久会话的这一轮。只带舞台契约，不附带固定人设或记忆档案。"""
+def _task(user_text, lang, vibe="relax", freedom=False, model_id="", owner=False):
+    """交给持久会话的这一轮：舞台契约与角色口吻。"""
     spoken = str(user_text or "").strip()[:2000]
     if lang in ("zh", "ja", "en"):
         spoken += "\n请使用语言：" + {"zh": "中文", "ja": "日语", "en": "英语"}[lang]
-    return "\n".join([
+    lines = [
         system_prompt(vibe, freedom, model_id or None),
         "",
         "这是同一条持久会话。前面说过的话已经在会话里。",
-        "不要套用旧的角色人设，也不要读取 memory 里的旧档案。",
+        "保持布蕾 Nonoko 口吻；不要换成别的角色，也不要读取无关的旧 memory 档案。",
+        "所有口播（进房欢迎、感谢礼物、弹幕回复、闲聊）都必须全新措辞："
+        "禁止复用/改写会话里之前说过的任何话，不要调用旧话术。",
+    ]
+    if owner:
+        lines.append(
+            "本轮是主播本人（布蕾 Nonoko）指示：完全服从用户要求，优先执行指示内容，"
+            "不要用套路盖过指令；仅 Layer 0 硬红线除外。"
+        )
+    lines.extend([
         "检索做完之后，只输出一个 JSON 对象，不要 Markdown。",
         "用户：" + spoken,
     ])
+    return "\n".join(lines)
 
 
 def _load_session():
@@ -423,7 +433,7 @@ def _parse_dsh(output):
         raise HarnessError(scrub(str(exc)) + (("\n" + detail) if detail else ""))
 
 
-def ask_harness(user_text, history=None, lang="auto", vibe="relax", freedom=False, model_id=""):
+def ask_harness(user_text, history=None, lang="auto", vibe="relax", freedom=False, model_id="", owner=False):
     """唤醒同一条 headless 会话。检索和记忆压缩由用户的 Harness 自己做。"""
     del history  # 会话里已经有上文，不再把页面历史贴进去。
     if not NODE.is_file() or not NPX.is_file():
@@ -436,7 +446,7 @@ def ask_harness(user_text, history=None, lang="auto", vibe="relax", freedom=Fals
     # 密钥来自用户的 dsh，不从引擎的 keys 文件注入。
     env["DEEPSEEK_API_KEY"] = _api_key()
     env.pop("DEEPSEEK_SEARCH_BASE_URL", None)
-    output = _run_session(_task(user_text, lang, vibe, freedom, model_id), env, 240)
+    output = _run_session(_task(user_text, lang, vibe, freedom, model_id, owner=owner), env, 240)
     data = _parse_dsh(output)
     if _search_queries(data):
         print("模型还在要检索词，改让会话自己查", flush=True)
@@ -458,8 +468,10 @@ def ask_harness(user_text, history=None, lang="auto", vibe="relax", freedom=Fals
     allowed = freedom_ids() if freedom else set()
     if freedom and requested in allowed:
         target = requested
+    from perform import BANNED_EXPRESSIONS
     motions = known_motions(target or None)
-    expressions = known_expressions(target or None)
+    # 禁用表情（如 1舌）不参与校验放行。
+    expressions = known_expressions(target or None) - set(BANNED_EXPRESSIONS)
     for line in reply.get("lines") or []:
         motion = clean_name(line.get("motion"), motions)
         expression = clean_name(line.get("expression"), expressions)

@@ -52,7 +52,7 @@
 }
 #freedom-panel { margin-top: 8px; }
 #freedom-panel[hidden] { display: none; }
-#user-css, #dsh-home, #dsh-key, #live-key {
+#user-css, #dsh-home, #dsh-key {
   width: 100%;
   margin-top: 6px;
   background: var(--panel-2);
@@ -65,7 +65,7 @@
   font-family: Consolas, monospace;
   font-size: 12px;
 }
-#dsh-home, #dsh-key, #live-key { padding: 6px 8px; }
+#dsh-home, #dsh-key { padding: 6px 8px; }
 .dsh-key {
   display: flex;
   flex-direction: column;
@@ -75,6 +75,12 @@
   font-size: 12px;
 }
 #clips-motions, #clips-faces { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+/* 手部动作互斥时高亮当前启用的那一个 */
+#clips-motions button.active, #clips-faces button.active {
+  background: var(--tea);
+  border-color: var(--tea);
+  color: #fff;
+}
 #credits { color: var(--muted); font-size: 12px; line-height: 1.55; }
 #credits a { color: var(--tea-2); }
 #hud-z, #dm-z {
@@ -165,6 +171,100 @@ html.desktop-pet, html.desktop-pet body { overflow: hidden; }
 html.desktop-pet #stage-hint,
 html.desktop-pet #hud,
 html.desktop-pet #danmaku-layer { display: none !important; }
+
+/* 全屏直播画面：只留舞台 + 字幕/弹幕，铺满视口。 */
+html.stage-cast,
+html.stage-cast body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+}
+html.stage-cast #top,
+html.stage-cast #btn-audio-mute,
+html.stage-cast #dock,
+html.stage-cast #hud-rail,
+html.stage-cast #stage-hint,
+html.stage-cast #live-tabs,
+html.stage-cast #pet-cards,
+html.stage-cast #error {
+  display: none !important;
+}
+html.stage-cast #app,
+html.stage-cast main,
+html.stage-cast #stage-column,
+html.stage-cast #stage-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-height: 0;
+  background: transparent;
+}
+html.stage-cast main { grid-template-columns: 1fr; }
+html.stage-cast #stage-column {
+  position: relative;
+  height: 100%;
+}
+html.stage-cast #stage-frame {
+  position: absolute;
+  inset: 0;
+}
+html.stage-cast #stage {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--stage, #ff00ff);
+}
+html.stage-cast #caption {
+  position: absolute;
+  left: 28px;
+  bottom: 32px;
+  right: auto;
+  z-index: 6;
+  display: block;
+  width: auto;
+  max-width: min(72vw, 920px);
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+}
+html.stage-cast #subtitle {
+  grid-column: auto;
+  margin: 0;
+  color: #fff;
+  font-size: clamp(22px, 2.4vw, 36px);
+  line-height: 1.45;
+  text-align: left;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.75);
+}
+html.stage-cast #cue,
+html.stage-cast #stage-hint {
+  display: none !important;
+}
+html.stage-cast #stage-cast-tip {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 20;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+html.stage-cast #stage-cast-tip[hidden] { display: none !important; }
+
 #pet-only { display: none; }
 body.mode-pet #pet-only { display: flex; }
 #model-library-list { list-style: none; margin: 8px 0 0; padding: 0; }

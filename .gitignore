@@ -1,5 +1,6 @@
 keys
 bili.local
+enter_visits.json
 dsh.local
 .env
 .env.*
@@ -16,3 +17,14 @@ __pycache__/
 _extract_model.py
 pet-window.log
 pet-window.pid
+songlist/
+songs.py
+web/music.js
+web/css/music.css
+web/song-live.js
+web/css/song-request.css
+nonoko性格/
+ruozhi1/
+ruozhi2/
+persona.py
+261琴/

@@ -53,6 +53,27 @@ html, body { background: var(--ios-bg); color: var(--ios-text); }
   border-radius: 999px;
 }
 .pill.ready { color: var(--ios-green); background: rgba(52, 199, 89, 0.15); border: 0; }
+
+.session-btn {
+  border: 0;
+  border-radius: 999px;
+  min-height: 32px;
+  padding: 6px 16px;
+  background: var(--ios-green);
+  color: #fff;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.session-btn:hover { filter: brightness(1.05); }
+.session-btn.is-on {
+  background: #8e8e93;
+  color: #fff;
+}
+.mode-pet .session-btn { display: none; }
+.mode-pet .audio-mute-btn { display: inline-flex; }
+.audio-mute-btn.is-muted { background: #ff3b30; }
 #model-pick, select, input[type="text"], input[type="password"], input[type="number"], input[type="search"], textarea {
   background: var(--ios-fill);
   color: var(--ios-text);
@@ -163,6 +184,7 @@ main { grid-template-columns: 1fr 400px; }
 
 /* 直播间一次只显示一页，页自己滚动。 */
 body:not(.mode-pet) #dock > #talk,
+body:not(.mode-pet) #dock > #music-player,
 body:not(.mode-pet) #dock > #backdrop,
 body:not(.mode-pet) #dock > .tools,
 body:not(.mode-pet) #dock > #model-library,
@@ -170,6 +192,7 @@ body:not(.mode-pet) #dock > #dsh-link,
 body:not(.mode-pet) #dock > #freedom,
 body:not(.mode-pet) #dock > #param-pane { display: none; }
 body:not(.mode-pet) #dock[data-live="talk"] > #talk,
+body:not(.mode-pet) #dock[data-live="music"] > #music-player,
 body:not(.mode-pet) #dock[data-live="scene"] > #backdrop,
 body:not(.mode-pet) #dock[data-live="look"] > .tools,
 body:not(.mode-pet) #dock[data-live="model"] > #model-library,
@@ -181,8 +204,11 @@ body:not(.mode-pet) #dock[data-live="param"] > #param-pane {
   min-height: 0;
   overflow: auto;
 }
+body:not(.mode-pet) #dock[data-live="music"] > #music-player {
+  display: flex;
+}
 
-#talk, #backdrop, .tools, #model-library, #dsh-link, #freedom, #param-pane {
+#talk, #music-player, #backdrop, .tools, #model-library, #dsh-link, #freedom, #param-pane {
   margin: 12px;
   padding: 14px;
   background: var(--ios-card);
@@ -267,7 +293,7 @@ button {
   min-height: 34px;
   cursor: pointer;
 }
-#btn-speak, #btn-ask, #btn-dsh, #btn-dsh-key, #btn-live-key, #btn-browse-model, #btn-save-model, #btn-back-live {
+#btn-speak, #btn-ask, #btn-dsh, #btn-dsh-key, #btn-browse-model, #btn-save-model, #btn-back-live {
   background: var(--ios-blue);
   color: #fff;
 }
