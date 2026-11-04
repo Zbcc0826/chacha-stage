@@ -264,6 +264,111 @@ def _cue_vibe(cues):
     return found, acts
 
 
+def is_hand_clip(name):
+    """与前端一致：模型自带里以 3 开头的都是手部/道具。"""
+    text = str(name or "").strip()
+    return bool(text) and text[0] == "3"
+
+
+# 按台词内容匹配表情（闲聊兜底用）。不含发型换装/拉琴话筒，那些要台词点名才行。
+_CLIP_BY_TEXT = (
+    (r"哭|难过|伤心|可怜|呜呜|泪", ("1哭耳", "1泪1", "1泪2", "2哭嘴")),
+    (r"吓|惊吓|吓一跳|突然|哇+", ("1惊", "1星")),
+    (r"惊喜|居然|太棒|厉害", ("1星", "1惊")),
+    (r"气|哼+|讨厌|烦死|生气", ("1气",)),
+    (r"晕|搞不懂|什么情况|莫名其妙", ("1晕",)),
+    (r"无语|呵呵|汗|离谱", ("1汗", "1黑")),
+    (r"怕|害怕|紧张|慌", ("1鼻线",)),
+    (r"喜欢|爱了|心动|爱你", ("1心眼", "3心")),
+    (r"害羞|不好意思|脸红|羞", ("1红1", "1红2", "3扣手指")),
+    (r"可爱|嘿嘿|卖萌", ("1红1", "1红2", "1星")),
+    (r"再见|拜拜|回见|挥手", ("3挥手", "挥手")),
+    (r"手机|刷一下|看看手机", ("3手机",)),
+    (r"游戏|开一把|手柄", ("3手柄",)),
+    (r"谢谢|感谢|礼物|舰长|提督|总督|送出", ("谢谢舰长大人爱你们", "1舰长", "1心眼", "1星")),
+    (r"欢迎|进来啦|进直播间|光临", ("挥手", "1星", "1心眼")),
+    (r"看看|凑近|前倾|盯", ("2前倾",)),
+    (r"小提琴|拉琴|弹琴", ("3小提琴",)),
+    (r"唱歌|唱一首|话筒|麦克风", ("3话筒",)),
+)
+
+_CLIP_BY_MOOD = {
+    "happy": ("1星", "1心眼"),
+    "shy": ("1红1", "1红2", "3扣手指"),
+    "angry": ("1气",),
+    "sad": ("1哭耳", "1泪1", "2哭嘴"),
+    "surprise": ("1惊", "1星"),
+    "star": ("1星", "1心眼"),
+    "think": ("1晕", "1汗"),
+    "cool": ("1黑", "1汗"),
+}
+
+
+def suggest_expression_for_text(text, mood=None):
+    """根据台词（和 mood）挑一个贴合的模型表情 id；对不上就按心情，再不行给轻表情。"""
+    blob = str(text or "")
+    for pattern, clips in _CLIP_BY_TEXT:
+        if re.search(pattern, blob):
+            return clips[0]
+    mood_key = str(mood or "").strip().lower()
+    mood_clips = _CLIP_BY_MOOD.get(mood_key)
+    if mood_clips:
+        return mood_clips[0]
+    # 闲聊默认：轻轻害羞/星星，避免假动作乱跳。
+    return "1红1"
+
+
+def fill_missing_expressions(lines):
+    """句子没写 expression 时，按台词补一个贴合的，避免前端再随机乱挂。"""
+    for line in lines:
+        if line.get("expression"):
+            continue
+        face = suggest_expression_for_text(line.get("say"), line.get("mood"))
+        if face and face not in BANNED_EXPRESSIONS:
+            line["expression"] = face
+    return lines
+
+
+# 禁用的模型表情：口播与自动匹配都不要用。
+BANNED_EXPRESSIONS = frozenset({"1舌"})
+
+
+def strip_banned_expressions(lines):
+    """丢掉禁用表情；若本句因此空了，再按台词补一个允许的。"""
+    for line in lines:
+        face = str(line.get("expression") or "").strip()
+        if face in BANNED_EXPRESSIONS:
+            line.pop("expression", None)
+            alt = suggest_expression_for_text(line.get("say"), line.get("mood"))
+            if alt and alt not in BANNED_EXPRESSIONS:
+                line["expression"] = alt
+    return lines
+
+
+def thin_stage_actions(lines):
+    """压动作频率：每句最多 1 个短动作；整轮最多保留一个手部 clip。"""
+    hand_kept = False
+    for line in lines:
+        cues = [item for item in (line.get("cues") or []) if isinstance(item, dict) and item.get("act")]
+        line["cues"] = cues[:1]
+        motion = line.get("motion")
+        expression = line.get("expression")
+        hand_expr = is_hand_clip(expression)
+        hand_motion = is_hand_clip(motion)
+        if hand_expr or hand_motion:
+            if hand_kept:
+                if hand_expr:
+                    line.pop("expression", None)
+                if hand_motion:
+                    line.pop("motion", None)
+            else:
+                hand_kept = True
+                # 同时有手部表情和手部动作时只留表情，避免双手叠上。
+                if hand_expr and hand_motion:
+                    line.pop("motion", None)
+    return lines
+
+
 def _line_dict(say, mood, cues, vibe=None, motion=None, expression=None):
     text = str(say or "").strip()
     if not text:
@@ -342,7 +447,11 @@ def normalize_reply(data, current="relax"):
             lines.extend(_distribute(texts, data.get("mood"), shared_cues))
         else:
             lines.append(_line_dict(say, data.get("mood"), shared_cues, None, data.get("motion"), data.get("expression")))
-    lines = [line for line in lines if line][:8]
+    # 口播句子不宜太碎；动作另行压频，避免每句都挥手/换道具。
+    lines = thin_stage_actions([line for line in lines if line][:4])
+    # 没给表情时按台词补，闲聊就不会再随机甩无关动作。
+    lines = fill_missing_expressions(lines)
+    lines = strip_banned_expressions(lines)
     if not lines:
         raise ValueError("没有要说的话")
     start = normalize_vibe(data.get("vibe") or cue_vibe or current_id, current_id)

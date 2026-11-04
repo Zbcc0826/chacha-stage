@@ -2,9 +2,13 @@
  * 滑杆范围直接读当前 moc。拖动即锁定，并在每帧绘制前写回。
  * 模型列表来自 /api/models。模型自带动作由 engine.js 播放。
  * 带 ?surface=pet 的是桌面浮窗，不参加直播间的口播轮询。
+ * 带 ?surface=stage 的是全屏纯画面（OBS / 投屏），跟随控制页开播。
  */
-const desktopPet = new URLSearchParams(location.search).get("surface") === "pet";
+const _surface = new URLSearchParams(location.search).get("surface") || "";
+const desktopPet = _surface === "pet";
+const stageCast = _surface === "stage";
 window.chachaDesktopPet = desktopPet;
+window.chachaStageCast = stageCast;
 
 /** 一键姿态。模型里没有的参数会跳过，数值按真实范围夹紧。 */
 const PRESETS = [
@@ -29,7 +33,6 @@ let core = null;
 let model = null;
 let app = null;
 let physicsRef = null;
-let blinkRef = null;
 let ahoge = null;
 let resetBase = false;
 let zoom = 1;
@@ -175,7 +178,9 @@ function bindToggles() {
     model.internalModel.physics = $("opt-physics").checked ? physicsRef : null;
   });
   $("opt-blink").addEventListener("change", () => {
-    model.internalModel.eyeBlink = $("opt-blink").checked ? blinkRef : null;
+    // 眨眼由 applyAutoBlink 驱动，这里只复位计时。
+    blinkClock = 0;
+    blinkLastNow = 0;
   });
   $("opt-mouse").addEventListener("change", () => {
     if (!$("opt-mouse").checked && model) {
@@ -199,7 +204,64 @@ function applyRuntimeToggles() {
   model.internalModel.physics = $("opt-physics").checked ? physicsRef : null;
   // SDK 的 breath 会同时改头角和身体，试验参数时会把滑杆带跑。
   model.internalModel.breath = null;
-  model.internalModel.eyeBlink = $("opt-blink").checked ? blinkRef : null;
+  // Idle 等动作会占用眨眼通道，官方 update 里 `motion更新成功 || eyeBlink` 会跳过眨眼。
+  // 因此不挂到 internalModel.eyeBlink，改由 applyAutoBlink 在绘制前强制推进。
+  model.internalModel.eyeBlink = null;
+}
+
+let blinkClock = 0;
+let blinkLastNow = 0;
+/** 下一次眨眼前的随机间隔（秒），避免节奏机械。 */
+let blinkGap = 2.4;
+
+/**
+ * 自动眨眼：必须在 applyPerformance / locks 之后调用，否则表情插值会把眼睛写回睁开。
+ * 不用 SDK CubismEyeBlink（Idle 动作会短路；且 updateParameters 常停在全开）。
+ * 只在「闭眼过程」写入，睁开阶段不碰参数，方便保留生气等半眯表情。
+ */
+function applyAutoBlink(now) {
+  if (!$("opt-blink") || !$("opt-blink").checked || !core) return;
+  const left = byId.get("ParamEyeLOpen");
+  const right = byId.get("ParamEyeROpen");
+  if (!left && !right) return;
+  if ((left && locks.has(left.index)) || (right && locks.has(right.index))) return;
+
+  const last = blinkLastNow || now;
+  let dt = (now - last) / 1000;
+  blinkLastNow = now;
+  if (dt <= 0 || dt > 0.2) dt = 1 / 60;
+
+  blinkClock += dt;
+  // 闭眼曲线：下压 → 全闭停顿 → 抬起；间隔随机，避免像节拍器。
+  // 全闭略拉长，261 这类细眼皮短闭几乎看不出。
+  const closeDur = 0.09;
+  const holdDur = 0.14;
+  const openDur = 0.12;
+  const blinkDur = closeDur + holdDur + openDur;
+  if (blinkClock >= blinkGap + blinkDur) {
+    blinkClock = 0;
+    blinkGap = 2.0 + Math.random() * 3.0;
+  }
+  if (blinkClock < blinkGap) return;
+
+  const t = blinkClock - blinkGap;
+  let open = 1;
+  if (t < closeDur) open = 1 - t / closeDur;
+  else if (t < closeDur + holdDur) open = 0;
+  else if (t < blinkDur) open = (t - closeDur - holdDur) / openDur;
+  else return;
+
+  // 取当前值与眨眼开合的较小者，避免把已眯上的眼睛强制撑开。
+  if (left && !locks.has(left.index)) {
+    const cur = core.getParameterValueByIndex(left.index);
+    const next = left.min + open * (left.max - left.min);
+    core.setParameterValueByIndex(left.index, Math.min(cur, next));
+  }
+  if (right && !locks.has(right.index)) {
+    const cur = core.getParameterValueByIndex(right.index);
+    const next = right.min + open * (right.max - right.min);
+    core.setParameterValueByIndex(right.index, Math.min(cur, next));
+  }
 }
 
 /** 未锁定的待机动作。锁定值在这之后写入，因此滑杆始终优先。 */
@@ -229,6 +291,23 @@ function applyIdle(now) {
   }
 }
 
+/** Cubism5 大模型偶发排序表全 0，导致只画到透明 mesh；按 renderOrders 重填。 */
+function ensureDrawableSort() {
+  if (!model || !model.internalModel || !core) return;
+  const renderer = model.internalModel.renderer;
+  const list = renderer && renderer._sortedDrawableIndexList;
+  if (!list || !list.length) return;
+  let zeros = 0;
+  const probe = Math.min(list.length, 24);
+  for (let i = 0; i < probe; i += 1) {
+    if (list[i] === 0) zeros += 1;
+  }
+  if (zeros < probe - 1) return;
+  const orders = core.getModel && core.getModel().drawables && core.getModel().drawables.renderOrders;
+  if (!orders || orders.length !== list.length) return;
+  for (let i = 0; i < orders.length; i += 1) list[orders[i]] = i;
+}
+
 /** 绘制前写回锁定值。保存参数发生在这之前，所以这里的写入只影响当前这一帧的画面。 */
 function onBeforeDraw() {
   const now = performance.now();
@@ -239,6 +318,7 @@ function onBeforeDraw() {
     fpsStamp = now;
   }
   if (!core) return;
+  ensureDrawableSort();
   applyIdle(now);
   if ($("opt-ahoge").checked && ahoge && !locks.has(ahoge.index)) {
     const span = ahoge.max - ahoge.min;
@@ -251,6 +331,8 @@ function onBeforeDraw() {
     core.setParameterValueByIndex(index, value);
   }
   applyPerformance(now);
+  // 眨眼放在最后：表情/口型插值之后仍能压上眼皮。
+  applyAutoBlink(now);
   for (const item of params) {
     lastDrawn.set(item.index, core.getParameterValueByIndex(item.index));
   }
@@ -265,12 +347,99 @@ function onBeforeMotion() {
   }
 }
 
+/**
+ * 扩展裁剪遮罩排版：原版每通道最多 9/16 格（总计约 36/64），
+ * 261琴这类 VTS 模型会到约 100 个，超限后 _layoutChannelNo 为空并整帧崩溃。
+ * 这里按 N×N 网格继续排，并加大遮罩图集，保留遮罩而不是关掉。
+ */
+function patchHeavyClippingLayout(manager) {
+  if (!manager || manager.__chachaLayoutPatched) return;
+  manager.__chachaLayoutPatched = true;
+
+  if (typeof manager.setClippingMaskBufferSize === "function") {
+    manager.setClippingMaskBufferSize(4096);
+  } else {
+    manager._clippingMaskBufferSize = 4096;
+  }
+
+  if (manager.getChannelFlagAsColor) {
+    const originalFlag = manager.getChannelFlagAsColor.bind(manager);
+    manager.getChannelFlagAsColor = (index) => originalFlag(index) || { R: 1, G: 0, B: 0, A: 0 };
+  }
+
+  manager.setupLayoutBounds = function setupLayoutBoundsExtended(usingClipCount) {
+    const list = this._clippingContextListForMask;
+    if (!list || usingClipCount <= 0) return;
+    let perChannel = (usingClipCount / 4) | 0;
+    let rem = usingClipCount % 4;
+    let cursor = 0;
+    for (let channel = 0; channel < 4; channel += 1) {
+      const count = perChannel + (channel < rem ? 1 : 0);
+      if (count <= 0) continue;
+      if (count === 1) {
+        const clip = list[cursor++];
+        clip._layoutChannelNo = channel;
+        clip._layoutBounds.x = 0;
+        clip._layoutBounds.y = 0;
+        clip._layoutBounds.width = 1;
+        clip._layoutBounds.height = 1;
+        continue;
+      }
+      if (count === 2) {
+        for (let i = 0; i < count; i += 1) {
+          const clip = list[cursor++];
+          clip._layoutChannelNo = channel;
+          clip._layoutBounds.x = 0.5 * (i % 2);
+          clip._layoutBounds.y = 0;
+          clip._layoutBounds.width = 0.5;
+          clip._layoutBounds.height = 1;
+        }
+        continue;
+      }
+      // 通用网格：保证格子数 >= count（100 遮罩时约每通道 25 → 5×5）
+      const grid = Math.max(2, Math.ceil(Math.sqrt(count)));
+      const cell = 1 / grid;
+      for (let i = 0; i < count; i += 1) {
+        const clip = list[cursor++];
+        const col = i % grid;
+        const row = (i / grid) | 0;
+        clip._layoutChannelNo = channel;
+        clip._layoutBounds.x = col * cell;
+        clip._layoutBounds.y = row * cell;
+        clip._layoutBounds.width = cell;
+        clip._layoutBounds.height = cell;
+      }
+    }
+  };
+}
+
+function enableHeavyClipping() {
+  if (!model || !model.internalModel) return;
+  const renderer = model.internalModel.renderer;
+  if (!renderer || !renderer._clippingManager) return;
+  // 若之前误关过遮罩，恢复核心标记。
+  const modelCore = model.internalModel.coreModel;
+  if (modelCore && modelCore.isUsingMasking && modelCore.isUsingMasking() === false) {
+    delete modelCore.isUsingMasking;
+  }
+  patchHeavyClippingLayout(renderer._clippingManager);
+  // 强制下一帧按新尺寸重建 mask FBO。
+  renderer.firstDraw = true;
+  if (renderer._clippingManager._maskRenderTexture) {
+    renderer._clippingManager._maskRenderTexture = null;
+  }
+}
+
 function hookModel() {
   const internal = model.internalModel;
   core = internal.coreModel;
   physicsRef = internal.physics || null;
-  blinkRef = internal.eyeBlink || null;
+  // SDK eyeBlink 会被 Idle 动作短路，且常停在全开；改由 applyAutoBlink 驱动。
+  blinkClock = 0;
+  blinkLastNow = 0;
+  blinkGap = 1.2 + Math.random() * 1.5;
   applyRuntimeToggles();
+  enableHeavyClipping();
   internal.on("beforeMotionUpdate", onBeforeMotion);
   internal.on("beforeModelUpdate", onBeforeDraw);
 }
@@ -519,7 +688,16 @@ async function loadStatus() {
     pill.textContent = status.llmReady ? "dsh 已连接" : "dsh 未配置密钥";
     pill.classList.toggle("ready", !!status.llmReady);
     if (status.vibe) adoptVibe(status.vibe);
+    adoptLiveSession(status);
     showDanmaku(status.danmaku);
+    // 直播间刷新后默认停播；全屏画面/桌宠不改会话。
+    if (!window.chachaDesktopPet && !window.chachaStageCast && status.liveSession) {
+      postJson("/api/session", { live: false }).then((session) => {
+        adoptLiveSession(session);
+        speech.live = false;
+        paintSession();
+      }).catch(() => {});
+    }
   } catch (error) {
     $("llm").textContent = "状态未知";
   }
@@ -587,6 +765,9 @@ async function showModel(modelId, options) {
   buildGroups(labels);
   layoutModel();
   window.stageModel = model;
+  // 首帧后再确认一次排版补丁（renderer 有时稍晚才挂上 clippingManager）。
+  enableHeavyClipping();
+  requestAnimationFrame(() => enableHeavyClipping());
   model.eventMode = "static";
   window.dispatchEvent(new CustomEvent("stage-model"));
   if (kept && window.stage && window.stage.setView) window.stage.setView(kept.zoom, kept.x, kept.y);
@@ -681,6 +862,10 @@ async function main() {
     resolution: Math.min(window.devicePixelRatio || 1, 2),
     resizeTo: stage,
   });
+  // 暴露给调试；部分环境下 ticker 可能未自动转起来，这里强制启动渲染循环。
+  window.app = app;
+  if (app.ticker && !app.ticker.started) app.ticker.start();
+  app.ticker.maxFPS = 0;
   stage.appendChild(app.view);
   window.addEventListener("pointerup", () => {
     draggingIndex = -1;
@@ -763,14 +948,33 @@ const speech = {
   busy: false,
   actId: 0,
   seenActs: new Set(),
+  // 刷新后先对齐服务端最新 actId，避免把缓存里旧口播再念一遍。
+  cueReady: false,
   notice: "",
   // 没说完的时候，新生成的话只排队，不能一起开口。
-  live: true,
+  // 默认关着，点顶栏「开始」才开全套（接弹幕 + 找话题闲聊）。
+  live: false,
+  // 服务端开播世代：停止后递增，用来丢掉已生成但未播的直播句。
+  liveSession: false,
+  liveGen: 0,
+  // 口播静音：控制页与全屏画面各自记住，只影响本页扬声器。
+  muted: false,
   queue: [],
   fetching: false,
   analyserOn: false,
   replyId: null,
   board: [],
+  // 冷场闲聊：约 10 秒没人说话就自己开口。
+  lastSpokeAt: 0,
+  fillerBusy: false,
+  // 刚回完弹幕后，再等这么久看还有没有弹幕；期间不续闲聊。
+  postDanmakuQuietUntil: 0,
+  // 本轮口播是否来自弹幕/礼物/进房（用于结束后进入静默窗）。
+  spokeDanmaku: false,
+  // 弹幕复述句播完后，下一句前的思考停顿（毫秒）。
+  pendingThinkPause: 0,
+  // 复述已结束、回答句尚未入队时的挂起标记（与 token 对齐防串台）。
+  thinkWaitToken: 0,
 };
 
 // 直播间和桌宠共用的形象、语音。桌宠先等直播间写入，避免一打开就把缩放和姿态盖掉。
@@ -779,7 +983,7 @@ const share = {
   micRev: 0,
   busy: false,
   quiet: false,
-  lookReady: !window.chachaDesktopPet,
+  lookReady: !(window.chachaDesktopPet || window.chachaStageCast),
   lastLook: "",
   owner: "web",
   panX: 0,
@@ -895,8 +1099,9 @@ function applyPerformance(now) {
     if (!item || locks.has(item.index)) continue;
     extra[id] = (extra[id] || 0) + value;
   }
+  const mouthDriving = speech.active;
   for (const [id, value] of Object.entries(speech.shown)) {
-    if (speech.active && (id === "ParamMouthOpenY" || id === "ParamMouthForm")) continue;
+    if (mouthDriving && (id === "ParamMouthOpenY" || id === "ParamMouthForm")) continue;
     const item = byId.get(id);
     if (!item) continue;
     core.setParameterValueByIndex(item.index, clamp(item, value + (extra[id] || 0)));
@@ -976,30 +1181,22 @@ function unlockAudio() {
   if (!Ctx) return;
   if (!speech.audioCtx) speech.audioCtx = new Ctx();
   if (speech.audioCtx.state === "suspended") speech.audioCtx.resume();
+  // 顺带解锁 HTMLAudio 自动播放策略（静音短音）。
+  try {
+    const quiet = new Audio(
+      "data:audio/wav;base64,UklGRimAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA="
+    );
+    quiet.volume = 0.01;
+    quiet.play().catch(() => {});
+  } catch (error) {}
 }
 
 function wireAnalyser(audio) {
-  const Ctx = window.AudioContext || window.webkitAudioContext;
-  if (!Ctx) return false;
-  if (!speech.audioCtx) speech.audioCtx = new Ctx();
-  if (speech.audioCtx.state === "suspended") speech.audioCtx.resume();
-  // 上下文没跑起来时不要把声音接走，否则扬声器是静音的。
-  if (speech.audioCtx.state !== "running") return false;
-  try {
-    const source = speech.audioCtx.createMediaElementSource(audio);
-    if (!speech.analyser) {
-      speech.analyser = speech.audioCtx.createAnalyser();
-      speech.analyser.fftSize = 1024;
-      speech.analyser.connect(speech.audioCtx.destination);
-    }
-    source.connect(speech.analyser);
-    speech.sourceNode = source;
-    speech.analyserOn = true;
-    return true;
-  } catch (error) {
-    speech.analyserOn = false;
-    return false;
-  }
+  // 不再把 HTMLAudio 接进 MediaElementSource：一旦接管失败或 CORS 不齐，浏览器会整段静音。
+  // 嘴型改用口型时间轴（planned mouth），声音只走元素直出。
+  speech.analyserOn = false;
+  speech.sourceNode = null;
+  return false;
 }
 
 /** 停掉正在响的那一句，避免两段声音叠在一起。 */
@@ -1017,10 +1214,36 @@ function haltAudio() {
   speech.audio = null;
 }
 
+/** 这一轮是礼物、进房还是普通弹幕。 */
+function speechKind(data) {
+  if (!data) return "";
+  if (data.kind) return data.kind;
+  if (data.heard && data.heard.kind) return data.heard.kind;
+  return "";
+}
+
 /** 合成和思考的提示写在模型下面的字幕栏，不叠在幕布上。 */
 function setCue(text) {
   const cue = $("cue");
   if (cue) cue.textContent = text || "";
+}
+
+/** 复述句播完后：若队列已有下一句则立刻「思考」停顿；若回答句还在路上则先挂起，等 enqueue 再停顿。 */
+function runThinkPauseThenPump(token) {
+  const pause = Number(speech.pendingThinkPause) || 0;
+  speech.pendingThinkPause = 0;
+  speech.thinkWaitToken = 0;
+  if (pause <= 0) {
+    pumpSpeech();
+    return;
+  }
+  setCue("思考中…");
+  $("status").textContent = "思考中…";
+  window.setTimeout(() => {
+    if (speech.token !== token) return;
+    if (speech.active) return;
+    pumpSpeech();
+  }, pause);
 }
 
 function finishSpeech() {
@@ -1030,15 +1253,52 @@ function finishSpeech() {
   speech.cues = [];
   // 这一轮说完，表情再缓回默认。vibe 留着，下一轮可以接着晃。
   speech.mood = {};
-  if (!speech.queue.length && speech.replyId != null) {
+  noteSpoke();
+  // 说完收回模型自带表情/手部，避免一直挂着。
+  if (window.stageClips && typeof window.stageClips.restoreClip === "function") {
+    window.stageClips.restoreClip();
+  } else if (window.stageClips && typeof window.stageClips.clearHand === "function") {
+    window.stageClips.clearHand();
+  }
+  if (!speech.queue.length && speech.replyId != null && !speech.pendingThinkPause) {
     noteDanmakuDone(speech.replyId);
     speech.replyId = null;
     renderDanmaku(speech.board);
   }
   const token = speech.token;
   if (speech.queue.length) {
-    pumpSpeech();
+    runThinkPauseThenPump(token);
     return;
+  }
+  // 回答句可能还在合成/轮询路上：保留 pendingThinkPause，等 enqueueSpeech 再接停顿。
+  if (speech.pendingThinkPause > 0) {
+    speech.thinkWaitToken = token;
+    setCue("思考中…");
+    $("status").textContent = "思考中…";
+    // 兜底：若后续没有下一句，几秒后取消挂起，避免卡死。
+    window.setTimeout(() => {
+      if (speech.thinkWaitToken !== token) return;
+      if (speech.active || speech.queue.length) return;
+      speech.pendingThinkPause = 0;
+      speech.thinkWaitToken = 0;
+      if (speech.replyId != null) {
+        noteDanmakuDone(speech.replyId);
+        speech.replyId = null;
+        renderDanmaku(speech.board);
+      }
+      if (speech.spokeDanmaku) {
+        speech.spokeDanmaku = false;
+        speech.postDanmakuQuietUntil = performance.now() + 10000;
+      }
+      if (speech.live) armLive();
+      window.setTimeout(resumeMic, 350);
+    }, 6000);
+    return;
+  }
+  // 回完弹幕后先静默 10 秒专等弹幕，不马上续自己的闲聊。
+  if (speech.spokeDanmaku) {
+    speech.spokeDanmaku = false;
+    speech.postDanmakuQuietUntil = performance.now() + 10000;
   }
   if (speech.live) armLive();
   window.setTimeout(resumeMic, 350);
@@ -1061,15 +1321,23 @@ function stopSpeech() {
   speech.mouthBias = 0;
   speech.actFade = null;
   speech.level = 0;
+  speech.pendingThinkPause = 0;
+  speech.thinkWaitToken = 0;
   haltAudio();
   if ($("subtitle")) $("subtitle").textContent = "";
   setCue("");
 }
 
-/** 还在说就排到后面；没在说才开口。 */
+
+/** 还在说就排到后面；没在说才开口。复述后若在等思考停顿，先停再播。 */
 function enqueueSpeech(data) {
   if (!data || data.idle) return;
   speech.queue.push(data);
+  if (speech.active) return;
+  if (speech.pendingThinkPause > 0) {
+    runThinkPauseThenPump(speech.token);
+    return;
+  }
   pumpSpeech();
 }
 
@@ -1088,6 +1356,7 @@ function beginPerformance(data) {
   speech.lineIndex = -1;
   speech.notice = "";
   speech.level = 0;
+  noteSpoke();
   if (data.vibe) adoptVibe(data.vibe);
   if (data.stage && window.stageFreedom) {
     Promise.resolve(window.stageFreedom.apply(data.stage)).catch((error) => console.warn(error));
@@ -1095,9 +1364,33 @@ function beginPerformance(data) {
   if (data.heard && data.heard.id != null) {
     if (speech.replyId != null && speech.replyId !== data.heard.id) noteDanmakuDone(speech.replyId);
     speech.replyId = data.heard.id;
+    speech.spokeDanmaku = true;
     renderDanmaku(speech.board);
+  } else if (!data.filler) {
+    speech.spokeDanmaku = false;
   }
+  // 普通弹幕复述后停顿。礼物致谢、进房欢迎不装作思考。
+  const lineIndex = Number(data.lineIndex);
+  const lineCount = Number(data.lineCount);
+  const kind = speechKind(data);
+  const wantThink = kind !== "gift" && kind !== "enter" && (
+    !!data.thinkAfter || (!!data.heard && lineIndex === 0 && lineCount > 1)
+  );
+  if (wantThink) {
+    speech.pendingThinkPause = 1100 + Math.random() * 700;
+  }
+  if (kind === "gift") setCue("感谢礼物");
+  else if (kind === "enter") setCue("欢迎进场");
+  else if (data.echo || (data.heard && lineIndex === 0)) setCue("复述弹幕…");
   if (data.webError && data.channel !== "web") toast("网页不可用，已改用 API：" + data.webError);
+  // 闲聊轮：没带表情时按台词内容补一个，不再随机甩动作。
+  if (data.filler) {
+    const line = speech.lines[0];
+    if (line && !line.expression) {
+      const id = pickClipForSpeech(line.say || data.say || "", line.mood);
+      if (id) line.expression = id;
+    }
+  }
   startLine(token, 0, data);
   if (speech.live && !speech.queue.length) armLive();
 }
@@ -1112,11 +1405,27 @@ function petIsShowing() {
   return !!(button && button.getAttribute("aria-pressed") === "true");
 }
 
-/** 同一轮口播只播一次。桌宠开着时，嘴型、动作和声音只在桌宠窗口播。 */
-function deliverSpeech(data) {
+/** 是否允许自动播这条（弹幕/闲聊）。未开播只推进游标，不念。 */
+function isLiveAutoAct(data) {
+  if (!data) return false;
+  if (data.autoLive === true || data.liveGen != null) return true;
+  if (data.filler === true) return true;
+  if (data.heard && data.heard.id != null) return true;
+  return false;
+}
+
+function liveAutoAllowed() {
+  // 桌宠 / 全屏画面跟随服务端开播；控制页看本地点的「开始」。
+  if (window.chachaDesktopPet || window.chachaStageCast) return !!speech.liveSession;
+  return !!speech.live;
+}
+
+/** 同一轮口播只播一次。force 用于手动「直接说 / 提问」。 */
+function deliverSpeech(data, opts) {
   if (!data || data.idle || data.streamed) return;
+  const force = !!(opts && opts.force);
   if (Array.isArray(data.batch)) {
-    for (const item of data.batch) deliverSpeech(item);
+    for (const item of data.batch) deliverSpeech(item, opts);
     return;
   }
   if (data.actId != null) {
@@ -1125,8 +1434,30 @@ function deliverSpeech(data) {
     speech.seenActs.add(id);
     speech.actId = id;
   }
-  if (!window.chachaDesktopPet && petIsShowing()) return;
+  // 未开播：自动直播句只吞掉编号，不排队；避免停止后仍念出已生成内容。
+  if (!force && isLiveAutoAct(data) && !liveAutoAllowed()) return;
+  if (!force && isLiveAutoAct(data) && data.liveGen != null && speech.liveGen != null
+      && Number(data.liveGen) !== Number(speech.liveGen)) return;
   enqueueSpeech(data);
+}
+
+function adoptLiveSession(info) {
+  if (!info || typeof info !== "object") return;
+  if (typeof info.liveSession === "boolean") speech.liveSession = info.liveSession;
+  if (info.liveGen != null && Number.isFinite(Number(info.liveGen))) {
+    speech.liveGen = Number(info.liveGen);
+  }
+  // 桌宠 / 全屏画面跟随服务端开播：停播就立刻闭嘴并跳过缓存句。
+  if (window.chachaDesktopPet || window.chachaStageCast) {
+    const on = !!speech.liveSession;
+    if (speech.live !== on) {
+      speech.live = on;
+      if (!on) {
+        stopSpeech();
+        syncCueCursor();
+      }
+    }
+  }
 }
 
 /** 当前这一边收不收音。桌宠开着时只让桌宠听，直播间只跟着开关。 */
@@ -1140,7 +1471,7 @@ function micSettings() {
 }
 
 function noteMic() {
-  if (share.quiet) return;
+  if (share.quiet || window.chachaStageCast) return;
   const body = micSettings();
   body.owner = window.chachaDesktopPet ? "pet" : "web";
   fetch("/api/share", {
@@ -1176,6 +1507,8 @@ function lookBody() {
 
 /** 把这边的形象交给服务。桌宠加载完成前不写，免得盖掉直播间刚记下的样子。 */
 function noteLook() {
+  // 全屏画面只跟随控制页形象，不回写。
+  if (window.chachaStageCast) return;
   if (share.quiet || !share.lookReady || !currentModel) return;
   const body = lookBody();
   const text = JSON.stringify(body);
@@ -1328,8 +1661,26 @@ if (window.chachaDesktopPet) {
   window.setInterval(beat, 1000);
 }
 
+/** 对齐到当前最新口播编号；只接收对齐之后新生成的句子。 */
+async function syncCueCursor() {
+  try {
+    // after 取超大，pending 为空，服务端会回 idle + 当前 actId。
+    const data = await (await fetch("/api/cue?after=2147483647")).json();
+    const head = Number(data && data.actId);
+    if (Number.isFinite(head) && head >= 0) {
+      speech.actId = head;
+      speech.seenActs.add(head);
+    }
+  } catch (error) {
+    // 对齐失败也放行轮询，最多漏掉旧缓存里的一部分。
+  } finally {
+    speech.cueReady = true;
+  }
+}
+syncCueCursor();
+
 window.setInterval(() => {
-  if (speech.cueBusy) return;
+  if (!speech.cueReady || speech.cueBusy) return;
   speech.cueBusy = true;
   fetch("/api/cue?after=" + (speech.actId || 0))
     .then((response) => response.json())
@@ -1352,8 +1703,11 @@ function startLine(token, index, reply) {
   speech.lineIndex = index;
   if (line.vibe) adoptVibe(line.vibe);
   speech.mood = line.moodPose || {};
-  if (window.stageClips) window.stageClips.play(line);
-  speech.cues = line.cues || [];
+  if (window.stageClips) {
+    // 口播自动动作：节流；模型自带统一 5 秒后恢复原样。
+    window.stageClips.play(line, { auto: true });
+  }
+  speech.cues = Array.isArray(line.cues) ? line.cues.slice(0, 1) : [];
   speech.mouth = line.mouth || [];
   speech.mouthBias = line.mouthBias || 0;
   speech.duration = line.estimate || 1.2;
@@ -1379,15 +1733,36 @@ function startLine(token, index, reply) {
   }
   const goNext = () => {
     if (speech.token !== token || speech.lineIndex !== index) return;
-    if (index + 1 < speech.lines.length) startLine(token, index + 1, reply);
-    else finishSpeech();
+    if (index + 1 >= speech.lines.length) {
+      finishSpeech();
+      return;
+    }
+    // 普通弹幕复述完第一句后停顿。礼物和进房不思考。
+    const replyKind = speechKind(reply);
+    const danmakuThink = replyKind !== "gift" && replyKind !== "enter" && !!(reply && reply.heard) && index === 0;
+    const pauseMs = danmakuThink ? 1100 + Math.random() * 700 : 0;
+    if (pauseMs > 0) {
+      setCue("思考中…");
+      $("status").textContent = (reply.heard && reply.heard.uname ? ("回 " + reply.heard.uname + " · ") : "") + "思考中…";
+      window.setTimeout(() => {
+        if (speech.token !== token) return;
+        startLine(token, index + 1, reply);
+      }, pauseMs);
+      return;
+    }
+    startLine(token, index + 1, reply);
   };
   if (!line.audio) {
     window.setTimeout(goNext, speech.duration * 1000 + 180);
     return;
   }
   const audio = new Audio(line.audio);
+  audio.preload = "auto";
+  audio.volume = 1;
+  audio.muted = !!speech.muted;
   speech.audio = audio;
+  // 播放前解锁自动播放；不再接管 WebAudio，避免静音。
+  unlockAudio();
   speech.analyserOn = wireAnalyser(audio);
   audio.onloadedmetadata = () => {
     if (speech.token === token && Number.isFinite(audio.duration) && audio.duration > 0) {
@@ -1395,12 +1770,21 @@ function startLine(token, index, reply) {
     }
   };
   audio.onended = goNext;
-  audio.play().catch((error) => {
-    speech.notice = "没能播放声音：" + (error.message || "浏览器拦住了");
-    $("status").textContent = speech.notice;
-    toast(speech.notice);
-    goNext();
-  });
+  const tryPlay = () => {
+    const p = audio.play();
+    if (p && typeof p.then === "function") {
+      p.catch((error) => {
+        speech.notice = "没能播放声音：" + (error.message || "浏览器拦住了");
+        $("status").textContent = speech.notice;
+        toast(speech.notice);
+        // 被拦时仍按预估时长往下走，避免卡死。
+        window.setTimeout(goNext, speech.duration * 1000 + 180);
+      });
+    }
+  };
+  // 等一点缓冲再播，减少「有请求却没声」。
+  if (audio.readyState >= 2) tryPlay();
+  else audio.addEventListener("canplay", tryPlay, { once: true });
 }
 
 async function postJson(url, body) {
@@ -1519,11 +1903,107 @@ function rememberTurn(data, userText) {
   if (speech.history.length > 8) speech.history.splice(0, speech.history.length - 8);
 }
 
+/** streamed 口播只交了编号：立刻把本轮 act 拉下来播，不等 400ms 轮询。 */
+async function pullStreamedActs(data, opts) {
+  adoptLiveSession(data);
+  const force = !!(opts && opts.force);
+  // 停播后丢掉自动直播结果，避免还在路上的请求落地后开口。
+  if (!force && isLiveAutoAct(data) && !liveAutoAllowed()) return;
+  if (!data || !data.streamed) {
+    deliverSpeech(data, opts);
+    return;
+  }
+  const ids = (data.actIds || []).map(Number).filter((n) => Number.isFinite(n) && n > 0);
+  if (!ids.length) return;
+  const after = Math.min(...ids) - 1;
+  try {
+    const cue = await (await fetch("/api/cue?after=" + after)).json();
+    if (!force && !liveAutoAllowed() && isLiveAutoAct(data)) return;
+    if (data.filler && cue && !cue.idle) cue.filler = true;
+    if (data.heard && cue && !cue.heard) cue.heard = data.heard;
+    deliverSpeech(cue, opts);
+  } catch (error) {
+    console.warn(error);
+  }
+}
+
+/** 台词 → 贴合表情。闲聊兜底用，避免随机发型/拉琴/话筒。 */
+const SPEECH_CLIP_RULES = [
+  [/哭|难过|伤心|可怜|呜呜|泪/, ["1哭耳", "1泪1", "1泪2", "2哭嘴"]],
+  [/吓|惊吓|吓一跳|突然|哇{2,}/, ["1惊", "1星"]],
+  [/惊喜|居然|太棒|厉害/, ["1星", "1惊"]],
+  [/气|哼+|讨厌|烦死|生气/, ["1气"]],
+  [/晕|搞不懂|什么情况|莫名其妙/, ["1晕"]],
+  [/无语|呵呵|汗|离谱/, ["1汗", "1黑"]],
+  [/怕|害怕|紧张|慌/, ["1鼻线"]],
+  [/喜欢|爱了|心动|爱你/, ["1心眼", "3心"]],
+  [/害羞|不好意思|脸红|羞/, ["1红1", "1红2", "3扣手指"]],
+  [/可爱|嘿嘿|卖萌/, ["1红1", "1红2", "1星"]],
+  [/再见|拜拜|回见|挥手/, ["3挥手", "挥手"]],
+  [/手机|刷一下|看看手机/, ["3手机"]],
+  [/游戏|开一把|手柄/, ["3手柄"]],
+  [/谢谢|感谢|礼物|舰长|提督|总督|送出/, ["谢谢舰长大人爱你们", "1舰长", "1心眼", "1星"]],
+  [/欢迎|进来啦|进直播间|光临/, ["挥手", "1星", "1心眼"]],
+  [/看看|凑近|前倾|盯/, ["2前倾"]],
+  [/小提琴|拉琴|弹琴/, ["3小提琴"]],
+  [/唱歌|唱一首|话筒|麦克风/, ["3话筒"]],
+];
+
+const SPEECH_CLIP_BY_MOOD = {
+  happy: ["1星", "1心眼"],
+  shy: ["1红1", "1红2", "3扣手指"],
+  angry: ["1气"],
+  sad: ["1哭耳", "1泪1", "2哭嘴"],
+  surprise: ["1惊", "1星"],
+  star: ["1星", "1心眼"],
+  think: ["1晕", "1汗"],
+  cool: ["1黑", "1汗"],
+};
+
+/** 当前模型按钮里确实有的表情 id。 */
+function knownFaceIds() {
+  const ids = new Set();
+  document.querySelectorAll("#clips-faces button").forEach((el) => {
+    const id = (el.textContent || "").trim();
+    if (id) ids.add(id);
+  });
+  return ids;
+}
+
+/** 按说话内容（再按 mood）选表情；对不上就轻轻害羞。 */
+function pickClipForSpeech(text, mood) {
+  const known = knownFaceIds();
+  const pick = (list) => {
+    for (const id of list || []) {
+      if (known.size && !known.has(id)) continue;
+      return id;
+    }
+    return null;
+  };
+  const blob = String(text || "");
+  for (const [re, clips] of SPEECH_CLIP_RULES) {
+    if (re.test(blob)) {
+      const id = pick(clips);
+      if (id) return id;
+    }
+  }
+  const moodKey = String(mood || "").trim().toLowerCase();
+  const byMood = pick(SPEECH_CLIP_BY_MOOD[moodKey]);
+  if (byMood) return byMood;
+  return pick(["1红1", "1星"]) || null;
+}
+
+function noteSpoke() {
+  speech.lastSpokeAt = performance.now();
+}
+
 /** 空闲或正在说的时候预取下一条。生成结果只排队，不打断当前这句。 */
 async function armLive() {
-  if (!speech.live || speech.fetching || speech.queue.length) return;
+  // 等 cue 游标对齐完成，避免刷新瞬间生成的新句被 sync 跳过，或旧缓存被重播。
+  if (!speech.cueReady || !speech.live || speech.fetching || speech.queue.length) return;
   if (speech.busy && !speech.active) return;
   speech.fetching = true;
+  let tryFiller = false;
   try {
     const data = await postJson("/api/chat", {
       live: true,
@@ -1533,10 +2013,16 @@ async function armLive() {
       model: window.stage && window.stage.current && window.stage.current() ? window.stage.current().id : "",
       ...voiceBody(),
     });
+    adoptLiveSession(data);
     showDanmaku(data.danmaku);
-    if (data.idle) return;
+    if (!speech.live) return;
+    if (data.idle) {
+      // 没有弹幕：松开 fetching 后再尝试冷场闲聊（弹幕后静默窗内只继续探弹幕）。
+      tryFiller = true;
+      return;
+    }
     rememberTurn(data);
-    deliverSpeech(data);
+    await pullStreamedActs(data);
   } catch (error) {
     const message = error.message || "弹幕没接上";
     if (speech.liveError !== message) {
@@ -1547,7 +2033,67 @@ async function armLive() {
   } finally {
     speech.fetching = false;
   }
+  if (tryFiller && speech.live) {
+    const quietLeft = Number(speech.postDanmakuQuietUntil) - performance.now();
+    if (quietLeft > 0) {
+      window.setTimeout(() => { if (speech.live) armLive(); }, Math.min(quietLeft, 1000));
+      return;
+    }
+    armFiller();
+  }
 }
+
+/** 约 10 秒没开口就自己聊事迹/热点/歌曲，保持直播不冷场。弹幕优先。 */
+async function armFiller() {
+  if (!speech.cueReady || !speech.live || speech.fetching || speech.fillerBusy) return;
+  if (speech.active || speech.queue.length || speech.busy) return;
+  // 刚回完弹幕：先等 10 秒看还有没有弹幕，不要续刚才的闲聊。
+  if (performance.now() < Number(speech.postDanmakuQuietUntil || 0)) return;
+  const gap = 8000 + Math.random() * 4000;
+  const last = Number(speech.lastSpokeAt) || 0;
+  if (performance.now() - last < gap) return;
+  speech.fillerBusy = true;
+  speech.fetching = true;
+  setCue("闲聊构思中…");
+  try {
+    const data = await postJson("/api/chat", {
+      live: true,
+      filler: true,
+      lang: $("talk-lang").value,
+      history: speech.history,
+      freedom: window.stageFreedom ? window.stageFreedom.enabled() : false,
+      model: window.stage && window.stage.current && window.stage.current() ? window.stage.current().id : "",
+      ...voiceBody(),
+    });
+    adoptLiveSession(data);
+    if (!speech.live) {
+      setCue("");
+      return;
+    }
+    if (data.danmaku) showDanmaku(data.danmaku);
+    if (data.idle) {
+      setCue("");
+      return;
+    }
+    // 若生成期间来了弹幕，服务端仍可能返回弹幕轮；按普通回复处理。
+    rememberTurn(data);
+    data.filler = data.filler === true || (!data.heard && !!data.say);
+    // 先记下开口时间，避免构思时又连发；再立刻拉本轮 cue 开播。
+    noteSpoke();
+    await pullStreamedActs(data);
+    if (speech.live && data.filler) $("status").textContent = "闲聊防冷场中";
+  } catch (error) {
+    console.warn(error);
+    setCue("");
+  } finally {
+    speech.fetching = false;
+    window.setTimeout(() => { speech.fillerBusy = false; }, 2000);
+  }
+}
+
+// 供调试与防缓存丢函数：挂到 window。
+window.armFiller = armFiller;
+window.armLive = armLive;
 
 // 语音输入默认关闭。只听用户选中的那只麦克风。
 // 没设按键时一直听；设了按键就按住才录，松开发给 dsh。按键最多两个。
@@ -2203,7 +2749,7 @@ function bindTalk() {
     setCue("正在合成语音…");
     try {
       const data = await postJson("/api/perform", { text, lang: $("talk-lang").value, ...voiceBody() });
-      deliverSpeech(data);
+      deliverSpeech(data, { force: true });
     } catch (error) {
       $("status").textContent = error.message || "直接说失败";
       setCue("");
@@ -2238,7 +2784,8 @@ function bindTalk() {
       rememberTurn(data, text);
       $("talk-text").value = data.say || "";
       $("ask-text").value = "";
-      deliverSpeech(data);
+      await pullStreamedActs(data, { force: true });
+      if (!data.streamed) deliverSpeech(data, { force: true });
     } catch (error) {
       const message = error.message || "DeepSeek 没有答上来";
       speech.notice = message;
@@ -2272,23 +2819,367 @@ function bindTalk() {
       }
     });
   }
-  const live = $("opt-live");
-  if (live) {
-    speech.live = live.checked && !window.chachaDesktopPet;
-    live.addEventListener("change", () => {
-      speech.live = live.checked && !window.chachaDesktopPet;
-      if (!speech.live) {
-        speech.queue = [];
-        showDanmaku({ connected: false });
-      } else armLive();
-    });
-  }
+  bindSession();
+  bindAudioMute();
+  bindClearVisits();
+  bindStageFullscreen();
+  bindStageCastLinks();
+  bindStageCastPage();
   window.setInterval(() => {
+    // 全屏画面定期拉状态，跟随控制页开始/停止。
+    if (window.chachaStageCast) {
+      refreshDanmaku();
+      if (speech.live) pumpSpeech();
+      return;
+    }
     if (!speech.live) return;
     pumpSpeech();
-    armLive();
-    refreshDanmaku();
+    if (!window.chachaDesktopPet) {
+      armLive();
+      refreshDanmaku();
+    }
   }, 1500);
+  // 独立闲聊时钟：不依赖「弹幕空转」分支，避免旧缓存或抢锁导致永远不聊。
+  window.setInterval(() => {
+    if (!speech.live) return;
+    if (window.chachaStageCast || window.chachaDesktopPet) return;
+    armFiller();
+  }, 2000);
+}
+
+/** 同步顶栏按钮与「接弹幕」勾选时置位，避免 checked 赋值再触发 change。 */
+let sessionSyncing = false;
+
+/** 顶栏「开始 / 停止」：一键开全套（形象开关 + 待机 + 接弹幕口播）。 */
+function paintSession() {
+  const btn = $("btn-session");
+  const on = !!speech.live && !window.chachaDesktopPet && !window.chachaStageCast;
+  if (btn) {
+    btn.textContent = on ? "停止" : "开始";
+    btn.classList.toggle("is-on", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.hidden = !!(window.chachaDesktopPet || window.chachaStageCast);
+  }
+  const copyBtn = $("btn-stage-copy");
+  if (copyBtn) copyBtn.hidden = !!(window.chachaDesktopPet || window.chachaStageCast);
+  const fullBtn = $("btn-stage-full");
+  if (fullBtn) fullBtn.hidden = !!(window.chachaDesktopPet || window.chachaStageCast);
+  const fullFloat = $("btn-stage-full-float");
+  if (fullFloat) fullFloat.hidden = !!(window.chachaDesktopPet || window.chachaStageCast);
+  const live = $("opt-live");
+  if (live && live.checked !== on) {
+    sessionSyncing = true;
+    live.checked = on;
+    sessionSyncing = false;
+  }
+}
+
+function ensureAvatarBasics() {
+  // 开播时把常用形象开关拉起来，避免忘开眨眼/物理。
+  ["opt-physics", "opt-breath", "opt-blink"].forEach((id) => {
+    const el = $(id);
+    if (el) el.checked = true;
+  });
+  if (typeof applyRuntimeToggles === "function" && model) applyRuntimeToggles();
+}
+
+function playSessionIntro() {
+  // 只回待机，开场不强制挥手，避免动作太密。
+  if (!window.stage) return;
+  try {
+    if (typeof window.stage.motion === "function") window.stage.motion("Idle");
+  } catch (error) {}
+}
+
+/** 丢掉刷新前积压的待回弹幕，只接这之后的新内容。 */
+async function markDanmakuFresh() {
+  try {
+    const data = await postJson("/api/danmaku/fresh", {});
+    if (data && data.danmaku) showDanmaku(data.danmaku);
+  } catch (error) {}
+}
+
+async function startSession() {
+  if (window.chachaDesktopPet || window.chachaStageCast) {
+    toast("请在控制页点「开始」；本页只显示画面");
+    return;
+  }
+  if (!model) {
+    toast("先加载模型");
+    return;
+  }
+  let status = null;
+  try {
+    status = await (await fetch("/api/status")).json();
+  } catch (error) {
+    toast("读不到服务状态");
+    return;
+  }
+  if (status && status.llmReady === false) {
+    toast("先在「连接」里配好 dsh / DeepSeek 密钥");
+    return;
+  }
+  unlockAudio();
+  ensureAvatarBasics();
+  // 开播当刻起算：旧弹幕不回，历史也不带去复读。
+  speech.history = [];
+  stopSpeech();
+  speech.liveError = "";
+  speech.fillerBusy = false;
+  speech.fetching = false;
+  speech.postDanmakuQuietUntil = 0;
+  speech.spokeDanmaku = false;
+  noteSpoke();
+  // 先通知服务端开播，之后才允许弹幕/找话题。
+  try {
+    const session = await postJson("/api/session", { live: true });
+    adoptLiveSession(session);
+    if (session.danmaku) showDanmaku(session.danmaku);
+  } catch (error) {
+    toast(error.message || "没能开启直播会话");
+    return;
+  }
+  speech.live = true;
+  paintSession();
+  playSessionIntro();
+  await syncCueCursor();
+  await markDanmakuFresh();
+  armLive();
+  refreshDanmaku();
+  showDanmaku(status && status.danmaku ? status.danmaku : { connected: false });
+  $("status").textContent = "已开播 · 接弹幕 · 找话题闲聊";
+  setCue("全套流程已开启");
+  toast("已开始：接弹幕，空闲约10秒会自己找话题");
+}
+
+async function stopSession() {
+  speech.live = false;
+  speech.liveSession = false;
+  speech.fetching = false;
+  speech.fillerBusy = false;
+  speech.postDanmakuQuietUntil = 0;
+  speech.spokeDanmaku = false;
+  stopSpeech();
+  if (window.stageClips && typeof window.stageClips.restoreClip === "function") {
+    window.stageClips.restoreClip();
+  } else if (window.stageClips && typeof window.stageClips.clearHand === "function") {
+    window.stageClips.clearHand();
+  }
+  // 通知服务端停播：作废进行中的直播生成，并丢掉待回弹幕。
+  try {
+    const session = await postJson("/api/session", { live: false });
+    adoptLiveSession(session);
+    if (session.danmaku) showDanmaku(session.danmaku);
+  } catch (error) {
+    console.warn(error);
+  }
+  await syncCueCursor();
+  paintSession();
+  showDanmaku({ connected: false, board: speech.board || [], hint: "已停止：不再找话题/回弹幕" });
+  $("status").textContent = "已停止";
+  setCue("");
+  toast("已停止：找话题、回弹幕、口播全部停下");
+}
+
+function bindSession() {
+  const btn = $("btn-session");
+  const live = $("opt-live");
+  paintSession();
+  if (btn) {
+    btn.addEventListener("click", () => {
+      if (speech.live) stopSession().catch((error) => toast(error.message || "没能停止"));
+      else startSession().catch((error) => toast(error.message || "没能开始"));
+    });
+  }
+  if (live) {
+    live.addEventListener("change", () => {
+      if (sessionSyncing) return;
+      if (live.checked) startSession().catch((error) => toast(error.message || "没能开始"));
+      else stopSession().catch((error) => toast(error.message || "没能停止"));
+    });
+  }
+}
+
+/** 清除进房 uname 记录，之后再进都按第一次欢迎。 */
+function bindClearVisits() {
+  const btn = $("btn-clear-visits");
+  if (!btn || window.chachaStageCast || window.chachaPet) return;
+  btn.addEventListener("click", async () => {
+    if (!window.confirm("清除全部进房记录？之后观众再进都会当第一次欢迎。")) return;
+    btn.disabled = true;
+    try {
+      const data = await postJson("/api/visits/clear", {});
+      const n = Number(data && data.cleared) || 0;
+      if (data && data.danmaku) showDanmaku(data.danmaku);
+      toast(n ? ("已清除 " + n + " 人的进房记录") : "进房记录已是空的");
+    } catch (error) {
+      toast(error.message || "清除失败");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+/** 口播静音开关：立刻作用到正在播的句子，并记住偏好。 */
+function audioMuteKey() {
+  return window.chachaStageCast ? "chacha-audio-muted-stage" : "chacha-audio-muted";
+}
+
+function paintAudioMute() {
+  const btn = $("btn-audio-mute");
+  if (!btn) return;
+  const on = !!speech.muted;
+  btn.textContent = on ? "已静音" : "声音开";
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+  btn.classList.toggle("is-muted", on);
+  btn.title = on ? "点击开启口播声音" : "点击关闭口播声音";
+}
+
+function setAudioMuted(muted) {
+  speech.muted = !!muted;
+  try {
+    localStorage.setItem(audioMuteKey(), speech.muted ? "1" : "0");
+  } catch (error) {}
+  if (speech.audio) {
+    try { speech.audio.muted = speech.muted; } catch (error) {}
+  }
+  paintAudioMute();
+}
+
+function bindAudioMute() {
+  let saved = "0";
+  try { saved = localStorage.getItem(audioMuteKey()) || "0"; } catch (error) { saved = "0"; }
+  speech.muted = saved === "1";
+  paintAudioMute();
+  const btn = $("btn-audio-mute");
+  if (!btn) return;
+  // 全屏画面不要声音按钮；桌宠也不显示。
+  btn.hidden = !!(window.chachaDesktopPet || window.chachaStageCast);
+  if (btn.hidden) return;
+  btn.addEventListener("click", () => {
+    unlockAudio();
+    setAudioMuted(!speech.muted);
+    toast(speech.muted ? "口播已静音" : "口播声音已开");
+  });
+}
+
+/** 控制页：把直播画面（舞台+字幕）拉进浏览器全屏。 */
+function stageFullscreenElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+
+function paintStageFullscreen() {
+  const on = stageFullscreenElement() === $("stage-column");
+  ["btn-stage-full", "btn-stage-full-float"].forEach((id) => {
+    const btn = $(id);
+    if (!btn) return;
+    btn.textContent = on ? "退出全屏" : "全屏";
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.classList.toggle("is-on", on);
+  });
+}
+
+function toggleStageFullscreen() {
+  const column = $("stage-column");
+  if (!column) return;
+  const active = stageFullscreenElement();
+  if (active) {
+    const exit = document.exitFullscreen || document.webkitExitFullscreen;
+    if (exit) Promise.resolve(exit.call(document)).catch(() => {});
+    return;
+  }
+  unlockAudio();
+  const req = column.requestFullscreen || column.webkitRequestFullscreen;
+  if (!req) {
+    toast("当前浏览器不支持全屏");
+    return;
+  }
+  Promise.resolve(req.call(column)).catch((error) => {
+    toast(error && error.message ? error.message : "没能进入全屏");
+  });
+}
+
+function bindStageFullscreen() {
+  if (window.chachaDesktopPet || window.chachaStageCast) return;
+  ["btn-stage-full", "btn-stage-full-float"].forEach((id) => {
+    const btn = $(id);
+    if (btn) btn.addEventListener("click", toggleStageFullscreen);
+  });
+  document.addEventListener("fullscreenchange", paintStageFullscreen);
+  document.addEventListener("webkitfullscreenchange", paintStageFullscreen);
+  paintStageFullscreen();
+}
+
+/** 全屏纯画面链接（另一个网址，只显示直播舞台）。 */
+function stageCastUrl() {
+  const url = new URL(location.origin + "/");
+  url.searchParams.set("surface", "stage");
+  return url.toString();
+}
+
+async function copyStageCastUrl() {
+  const url = stageCastUrl();
+  const field = $("stage-cast-url");
+  if (field) field.value = url;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(url);
+    } else if (field) {
+      field.focus();
+      field.select();
+      document.execCommand("copy");
+    } else {
+      throw new Error("no clipboard");
+    }
+    toast("已复制全屏画面链接");
+    return true;
+  } catch (error) {
+    toast("复制失败，请手动复制：" + url);
+    return false;
+  }
+}
+
+function bindStageCastLinks() {
+  if (window.chachaStageCast || window.chachaDesktopPet) return;
+  const field = $("stage-cast-url");
+  const url = stageCastUrl();
+  if (field) field.value = url;
+  const openBtn = $("btn-stage-open");
+  if (openBtn) {
+    openBtn.addEventListener("click", () => {
+      window.open(stageCastUrl(), "chacha-stage-cast", "noopener,noreferrer");
+    });
+  }
+  ["btn-stage-copy", "btn-stage-copy-dock"].forEach((id) => {
+    const btn = $(id);
+    if (btn) btn.addEventListener("click", () => { copyStageCastUrl(); });
+  });
+}
+
+/** 纯画面页：点击进入浏览器全屏，并解锁声音；不发起找话题。 */
+function bindStageCastPage() {
+  if (!window.chachaStageCast) return;
+  document.body.classList.add("stage-cast");
+  let tip = $("stage-cast-tip");
+  if (!tip) {
+    tip = document.createElement("button");
+    tip.type = "button";
+    tip.id = "stage-cast-tip";
+    tip.textContent = "点击进入全屏";
+    document.body.appendChild(tip);
+  }
+  const goFull = () => {
+    unlockAudio();
+    const root = document.documentElement;
+    const req = root.requestFullscreen || root.webkitRequestFullscreen || root.msRequestFullscreen;
+    if (req) Promise.resolve(req.call(root)).catch(() => {});
+    tip.hidden = true;
+  };
+  tip.addEventListener("click", goFull);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "f" || event.key === "F") goFull();
+  });
+  speech.fetching = false;
 }
 
 loadStatus();
@@ -2526,7 +3417,16 @@ function escapeText(text) {
   }[ch]));
 }
 
-/** 舞台上的气泡。正在回的是金边，排队的是绿边。有内容时藏起「弹幕」抓手。 */
+/** 只允许 http(s) 头像，避免脏 URL 进 img。 */
+function safeUface(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  if (raw.indexOf("http://") === 0 || raw.indexOf("https://") === 0) return raw;
+  if (raw.indexOf("//") === 0) return "https:" + raw;
+  return "";
+}
+
+/** 舞台上的气泡。粉色可爱风；头像优先用开放平台 uface。 */
 function renderDanmaku(items) {
   const list = $("danmaku-list");
   const layer = $("danmaku-layer");
@@ -2542,9 +3442,14 @@ function renderDanmaku(items) {
     const tag = state === "speaking" ? "在回" : (state === "queued" ? "排队" : "");
     const name = escapeText(item.uname || "观众");
     const mark = name.slice(0, 1) || "观";
+    const face = safeUface(item.uface);
+    const ava = face
+      ? ("<img src=\"" + escapeText(face) + "\" alt=\"\" loading=\"lazy\" referrerpolicy=\"no-referrer\" onerror=\"this.remove()\" />" +
+         "<span class=\"dm-ava-fallback\">" + escapeText(mark) + "</span>")
+      : escapeText(mark);
     return (
       "<article class=\"dm dm-" + state + (fresh ? " dm-in" : "") + "\">" +
-      "<div class=\"dm-ava\">" + escapeText(mark) + "</div>" +
+      "<div class=\"dm-ava\">" + ava + "</div>" +
       "<div class=\"dm-body\"><div class=\"dm-name\">" + name + "</div>" +
       "<div class=\"dm-text\">" + escapeText(item.msg || "") +
       (tag ? "<span class=\"dm-tag\">" + tag + "</span>" : "") +
@@ -2557,6 +3462,7 @@ function renderDanmaku(items) {
 async function refreshDanmaku() {
   try {
     const status = await (await fetch("/api/status")).json();
+    adoptLiveSession(status);
     showDanmaku(status.danmaku);
   } catch (error) {}
 }

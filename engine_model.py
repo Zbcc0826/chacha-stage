@@ -77,17 +77,50 @@ def _clips(folder: Path, suffix: str) -> list:
     return found
 
 
+def load_clip_meta(folder: Path) -> dict:
+    """读模型目录 clips.meta.json：动作/表情 id → 实际用途。没有文件就当空表。"""
+    path = folder / "clips.meta.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    clips = data.get("clips") if isinstance(data, dict) else None
+    if not isinstance(clips, dict):
+        return {}
+    out = {}
+    for key, value in clips.items():
+        name = str(key or "").strip()
+        use = str(value or "").strip()
+        if name and use:
+            out[name] = use
+    return out
+
+
+def _with_clip_use(items: list, meta: dict) -> list:
+    """给 clip 列表补上 use（用途说明），供提示词和界面悬停。"""
+    for item in items:
+        use = meta.get(item["id"]) or meta.get(item.get("label") or "")
+        if use:
+            item["use"] = use
+    return items
+
+
 def motion_list_in(folder: Path) -> list:
     """待机用 Cubism 约定的 Idle 组名，其余一组一个文件，名字就是文件名。"""
+    meta = load_clip_meta(folder)
     items = []
     for stem, rel in _clips(folder, ".motion3.json"):
         group = "Idle" if stem.lower() == "idle" else stem
         items.append({"id": group, "label": "待机" if group == "Idle" else stem, "file": rel})
-    return items
+    return _with_clip_use(items, meta)
 
 
 def expression_list_in(folder: Path) -> list:
-    return [{"id": stem, "label": stem, "file": rel} for stem, rel in _clips(folder, ".exp3.json")]
+    meta = load_clip_meta(folder)
+    items = [{"id": stem, "label": stem, "file": rel} for stem, rel in _clips(folder, ".exp3.json")]
+    return _with_clip_use(items, meta)
 
 
 def motion_list() -> list:
@@ -559,8 +592,14 @@ def public_catalog(model_id=None) -> dict:
         folder = Path(current["dir"])
     if (folder / current["model"]).is_file():
         ensure_index_in(folder, current["model"])
-    motions = [{"id": item["id"], "label": item["label"]} for item in motion_list_in(folder)]
-    expressions = [{"id": item["id"], "label": item["label"]} for item in expression_list_in(folder)]
+    def _public_clip(item):
+        row = {"id": item["id"], "label": item["label"]}
+        if item.get("use"):
+            row["use"] = item["use"]
+        return row
+
+    motions = [_public_clip(item) for item in motion_list_in(folder)]
+    expressions = [_public_clip(item) for item in expression_list_in(folder)]
     return {
         "model": public_model(current),
         "motions": motions,

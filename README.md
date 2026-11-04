@@ -1,96 +1,85 @@
 # chacha-stage
 
-给 dsh 配套的虚拟主播 / 桌宠扩展包。工具层能力对接进 dsh 体系，舞台页面、口播合成、桌宠窗口这些展示层由本仓库的 Python 服务提供。
+dsh 组合包，外加一台本机虚拟主播 / 桌宠。组合包负责把工具交给 dsh；舞台页面、口播合成和桌宠窗口由本仓库的 Python 服务提供。
 
-作者：[早坂茶茶Unofficial](https://space.bilibili.com/3382868)，致敬开源社区。
+软件作者：[早坂茶茶Unofficial](https://space.bilibili.com/3382868)。向开源社区致敬。
 
-> 
-> 碎碎念：内置测试用的大肥鱼模型，尾巴色块有点溢出，要修得写不少额外逻辑，先把资源放在基础功能上了。能work就不是bug，源码的注释应该是比较完善，有需求或者bug让dsh或者其他agent改就行。
+另外，服务示例用的大肥鱼模型尾巴这个色块溢出可能需要更复杂的代码来处理，先把资源投到更重要的基础功能上了。
 
-## 包介绍
+## 这是什么包
 
-这是一个 dsh bundle 组合包，不是那种用 `dsh --profile <name>` 直接启动的独立配置文件。它的作用很简单：给你的 dsh 自动插入一层插件，不用手动改配置。
+`package.json` 声明 `dsh.bundle`，指向 `cordis.patch.yml`。这是组合包，不是 profile。profile 是用户用 `dsh --profile <name>` 启动的那一套；本包只贡献一层插件。
 
-具体来说，它会在 `@deepseek-ai/dsh-base` 之后，自动追加一层插件配置：
+这一层在 `@deepseek-ai/dsh-base` 之后插入一行：
 
-```
+```yaml
 - id: chacha-stage
   name: dsh-chacha-stage
 ```
 
-插件本身是纯 JS 写的，没有构建步骤，从 git 直接安装就能用，也不用额外开 `allowBuilds`。
+`name` 是包名，不是本机路径。安装之后由 Node 解析到 `plugin/index.js`。插件导出 `apply`，并 `inject` 工具注册表，再登记 `stage_say` 和 `stage_status`。支持的 dsh 版本写在 `engines.dsh`。
 
-### 安装
+入口是普通 JavaScript，没有构建步骤。从 git 安装不会跑 `prepare`，因此不需要在 profile 里给这个包开 `allowBuilds`。
 
-直接用 dsh 插件命令安装：
-
-```
+```sh
 dsh plugin --profile headless add github:Zbcc0826/chacha-stage
 ```
 
-装完可以让dsh先看一眼配置层，确认装上了：
+要先看层、先不启动：
 
-```
+```sh
 dsh --profile headless --dump-config
 ```
 
-输出里能看到 `# == dsh-chacha-stage` 这一层就对了。
+输出里应有一层 `# == dsh-chacha-stage`。`dsh plugin --profile headless remove dsh-chacha-stage` 会同时去掉依赖和这一层。用户自己的 `cordis.patch.yml` 排在组合包之后，可以按 `id: chacha-stage` 覆盖整行配置。
 
-### 卸载
+插件展示名和说明在 `locale/zh.json`、`locale/en.json`。详细介绍是 `docs/DETAIL.zh.md`。
 
-```
-dsh plugin --profile headless remove dsh-chacha-stage
-```
+## 模型
 
-依赖和配置层会一起删掉。
+内置角色是大肥鱼。原画 [神宫凉子](https://space.bilibili.com/13737731)，建模霓虹猫_NeonNeko。
 
-如果想自己改配置，在你自己的 `cordis.patch.yml` 里，按 `id: chacha-stage` 就能覆盖这一层的全部配置，优先级比本包自带的高。
+大肥鱼的模型文件按作者的使用须知，不放进这个仓库。请从作者的原始发布页取得压缩包，解压到 `models/deepseek-chan/`，并保留原来的文件名。引擎会读取目录里的 `.motion3.json` 和 `.exp3.json`，把它们登记成口播可以选的动作和表情。
 
-插件的显示名和多语言文案在 `locale/` 目录下，更详细的使用说明看 `docs/DETAIL.zh.md`。
+Live2D Cubism Core 随运行时放在 `vendor/live2dcubismcore.min.js`，属于 Live2D 的可再分发代码，协议见 [Live2D Proprietary Software License](https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html)。
 
-## 模型准备
+## 密钥
 
-内置测试用的角色是「大肥鱼」。如果要使用自己的live2D模型，可能需要让你的agent调试一些兼容性内容。
+口播和血条使用你自己的 DeepSeek 密钥。在直播间「连接 dsh」里填写，引擎会把它写进 dsh 主目录的 `.env`。也可以自己设置环境变量 `DEEPSEEK_API_KEY`。不要把密钥写进这个仓库。血条可能需要在服务内填一次密钥，用来跟踪 API 余额。插件的 `stage_status` 只报告有没有连上，不返回密钥。
 
-- 原画：[神宫凉子](https://space.bilibili.com/13737731)
-- 建模：[霓虹猫_NeonNeko](https://space.bilibili.com/3546725618813315)
+## 运行
 
-⚠️ 出于尊重原作者的使用协议，仓库里没有打包模型文件。请自行去原作者的发布页下载压缩包，解压到 `models/deepseek-chan/` 目录下，**保留原文件名不要改**。
+工具要打到已经开着的舞台。先启动服务：
 
-引擎会自动读取目录下的 `.motion3.json` 和 `.exp3.json`，把对应的动作、表情注册进口播的可选列表里。
-
-项目里自带的 `vendor/live2dcubismcore.min.js` 是 Live2D 官方的可再分发核心库，使用协议见 [Live2D Proprietary Software License](https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html)。
-
-## 密钥配置
-
-所有密钥都只存在你本地，不会上传、不会写进仓库，请放心填写。
-
-1. **DeepSeek API 密钥**
-口播生成、血条余额显示都靠它。在直播间页面的「连接 dsh」里填上就行，引擎会写到 dsh 主目录的 `.env` 里；你也可以自己手动设置环境变量 `DEEPSEEK_API_KEY`。
-血条功能需要单独填一次密钥，用来查询 API 余额；插件的 `stage_status` 只返回连接状态，不会返回密钥内容。
-2. **B站直播身份码**
-用来接弹幕。在页面「连接」里填写身份码，存在本地 `bili.local` 的 `key` 字段里，页面和日志都不会回显。连接弹幕时才会放进请求的 `IDCode` 参数里。
-留空保存会清空本地保存的身份码。
-
-## 启动运行
-
-舞台服务是本地 Python 写的，先装依赖再启动：
-
-```
+```text
 pip install -r requirements.txt
 python server.py
 ```
 
-启动后访问：`http://127.0.0.1:8787/`
-舞台样式、字段的配置说明在：`http://127.0.0.1:8787/schema/engine.md`
+打开 `http://127.0.0.1:8787/`。给 dsh 改舞台和样式的格式在 `http://127.0.0.1:8787/schema/engine.md`。
 
-### 几个细节
+多句口播按 `lines` 的顺序来。一句合成完就交给页面开播，不等后面的句子都合成完。
 
-- 引擎式封装l2D模型动作：长动作和短动作封装成单词，短参数形式和口播同步生成播放。
-- 口播逐句流式处理：一句合成完就立刻推给页面播放，不用等所有句子都生成完，体感更流畅。
-- 打开「自由操控」后，口播请求的 JSON 里可以额外带 `stage` 参数，用来调整角色位置、缩放、显隐、控件位置、遮挡层，甚至直接写一段自定义 CSS。关掉自由操控后这些指令会失效，默认样式不受影响。
-- 大部分样式和展示效果都可以交给 dsh 或者其他助手来控制，不用手工硬改代码。
+自由操控打开后，口播 JSON 可以带 `stage`，用来改角色位置、缩放、开关、控件位置、遮挡层和一段本页 CSS。关掉后这些指令会被丢掉。大部分样式和效果都可以让 dsh 或其他助手管理。
 
-## 其他
 
-项目做了dsh编辑友好方向的设计，想换模型、改样式、加功能跟你的大肥鱼说，让它直接翻源码就行，绝大部分内容都有自定义的空间。
+内置角色是大肥鱼。原画 [神宫凉子](https://space.bilibili.com/13737731)，建模霓虹猫_NeonNeko。
+
+大肥鱼的模型文件按作者的使用须知，不放进这个仓库。请从作者的原始发布页取得压缩包，解压到 `models/deepseek-chan/`，并保留原来的文件名。引擎会读取目录里的 `.motion3.json` 和 `.exp3.json`，把它们登记成口播可以选的动作和表情。
+
+Live2D Cubism Core 随运行时放在 `vendor/live2dcubismcore.min.js`，属于 Live2D 的可再分发代码，协议见 [Live2D Proprietary Software License](https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html)。
+
+## 密钥
+
+口播和血条使用你自己的DeepSeek密钥。在直播间「连接 dsh」里填写，引擎会把它写进 dsh 主目录的 `.env`。也可以自己设置环境变量 `DEEPSEEK_API_KEY`。跟你的dsh说需求，它会做好的。血条可能需要在服务内填一次apikey以跟踪api余额。
+
+## 运行
+
+```text
+pip install -r requirements.txt
+python server.py
+```
+
+打开 `http://127.0.0.1:8787/`。给 dsh 改舞台和样式的格式在 `http://127.0.0.1:8787/schema/engine.md`。
+
+自由操控打开后，口播 JSON 可以带 `stage`，用来改角色位置、缩放、开关、控件位置、遮挡层和一段本页 CSS。关掉后这些指令会被丢掉。大部分样式和效果都可以让dsh或其他ai助手进行管理和自定义。

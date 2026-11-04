@@ -19,8 +19,190 @@
   let imageUrl = "";
   let petPointer = null;
   let petDrag = null;
+  // 模型自带：3* 为手部（同时只能一个）；所有自带 clip 显示 5 秒后恢复原样。
+  const CLIP_HOLD_MS = 5000;
+  let activeHandExpression = "";
+  let clipPlayedMotion = false;
+  let clipRestoreTimer = 0;
+  // 3挥手待机是叠加参数，清表情层后手不会自己放下。到点前不要被别的恢复打断。
+  let waveHoldUntil = 0;
+  // 挥手相关参数：默认手保持模型默认值，其余手势收到 0。
+  const WAVE_HAND_IDS = [
+    "Param8", "Param10", "Param50", "Param58", "Param128",
+    "Param89", "Param90", "Param127", "Param169", "Param133",
+    "Param136", "Param170", "Param172", "Param179", "Param182", "Param88",
+  ];
+  const WAVE_GESTURE_IDS = {
+    Param50: 0, Param58: 0, Param128: 0, Param89: 0, Param90: 0,
+    Param127: 0, Param169: 0, Param133: 0, Param136: 0, Param170: 0,
+    Param172: 0, Param179: 0, Param182: 0, Param88: 0,
+  };
+  // 口播驱动的动作节流，避免句句换动作。
+  let lastAutoClipAt = 0;
 
   function $(id) { return document.getElementById(id); }
+
+  /** 手部动作：模型自带里以 3 开头的都是手部/道具。 */
+  function isHandClip(id) {
+    return String(id || "").charAt(0) === "3";
+  }
+
+  /** 挥手 / 3挥手 / 3挥手待机：一律只亮 5 秒，然后强制回默认手。 */
+  function isWaveHold(id) {
+    return String(id || "").indexOf("挥手") >= 0;
+  }
+
+  function coreModel() {
+    const model = window.stageModel;
+    return model && model.internalModel ? model.internalModel.coreModel : null;
+  }
+
+  function parameterIndex(core, id) {
+    try {
+      if (typeof core.getParameterIndex === "function") return core.getParameterIndex(id);
+    } catch (error) {}
+    return -1;
+  }
+
+  // Idle 不覆盖挥手参数；必须在 afterMotionUpdate（saveParameters 之前）压回，才会被存住。
+  let handHoldUntil = 0;
+  let handHoldHandler = null;
+  let handHoldModel = null;
+  const HAND_HOLD_MS = 1800;
+
+  /** 挥手用过的手部参数收回模型默认值；挥手手势明确归零。 */
+  function defaultHandPose(persist) {
+    const core = coreModel();
+    if (!core) return;
+    WAVE_HAND_IDS.forEach((id) => {
+      const index = parameterIndex(core, id);
+      if (index < 0) return;
+      let value = 0;
+      if (Object.prototype.hasOwnProperty.call(WAVE_GESTURE_IDS, id)) {
+        value = WAVE_GESTURE_IDS[id];
+      } else {
+        try {
+          if (typeof core.getParameterDefaultValueByIndex === "function") {
+            value = core.getParameterDefaultValueByIndex(index);
+          }
+        } catch (error) {}
+      }
+      try { core.setParameterValueByIndex(index, value); } catch (error) {}
+    });
+    // 立刻写入参数快照，避免下一帧 loadParameters 又读回挥手姿势。
+    if (persist !== false) {
+      try {
+        if (typeof core.saveParameters === "function") core.saveParameters();
+      } catch (error) {}
+    }
+  }
+
+  /** 立刻停掉表情队列，避免 1 秒淡出期间继续 Add 挥手。 */
+  function stopExpressionsHard() {
+    const model = window.stageModel;
+    const mgr = expressionManager(model);
+    if (!mgr) return;
+    try {
+      if (typeof mgr.stopAllExpressions === "function") mgr.stopAllExpressions();
+    } catch (error) {}
+    try {
+      if (typeof mgr.resetExpression === "function") mgr.resetExpression();
+    } catch (error) {}
+  }
+
+  function clearHandHold() {
+    handHoldUntil = 0;
+    if (handHoldHandler && handHoldModel) {
+      try { handHoldModel.off("afterMotionUpdate", handHoldHandler); } catch (error) {}
+    }
+    handHoldHandler = null;
+    handHoldModel = null;
+  }
+
+  /** 在 saveParameters 前持续压回默认手；挥手显示期内不抢跑。 */
+  function holdDefaultHands() {
+    clearHandHold();
+    handHoldUntil = performance.now() + HAND_HOLD_MS;
+    const model = window.stageModel;
+    const internal = model && model.internalModel;
+    if (!internal || typeof internal.on !== "function") {
+      defaultHandPose(true);
+      return;
+    }
+    handHoldModel = internal;
+    handHoldHandler = () => {
+      if (waveHoldUntil && performance.now() < waveHoldUntil) return;
+      if (performance.now() >= handHoldUntil) {
+        clearHandHold();
+        defaultHandPose(true);
+        return;
+      }
+      // 不在这里 save：本帧随后会 saveParameters，正好把默认手存进去。
+      defaultHandPose(false);
+    };
+    internal.on("afterMotionUpdate", handHoldHandler);
+    defaultHandPose(true);
+  }
+
+  function expressionManager(model) {
+    return model && model.internalModel && model.internalModel.motionManager
+      ? model.internalModel.motionManager.expressionManager
+      : null;
+  }
+
+  function paintHandButtons() {
+    const faces = $("clips-faces");
+    if (!faces) return;
+    faces.querySelectorAll("button[data-hand='1']").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.clipId === activeHandExpression);
+    });
+  }
+
+  /** 恢复模型自带：清表情，非待机动作回到 Idle，手部高亮取消。force 为真时立刻收回挥手。 */
+  function restoreClip(force) {
+    if (!force && waveHoldUntil && performance.now() < waveHoldUntil) {
+      scheduleClipRestore(waveHoldUntil - performance.now());
+      return;
+    }
+    if (clipRestoreTimer) {
+      window.clearTimeout(clipRestoreTimer);
+      clipRestoreTimer = 0;
+    }
+    // 挥手.motion 会 Loop；Idle 不带手部曲线。表情挥手是 Add。都要压回默认手。
+    const needDefaultHands = waveHoldUntil > 0 || isWaveHold(activeHandExpression) || clipPlayedMotion;
+    waveHoldUntil = 0;
+    const model = window.stageModel;
+    stopExpressionsHard();
+    if (needDefaultHands && model && typeof model.motion === "function") {
+      try {
+        const motions = model.internalModel && model.internalModel.motionManager;
+        if (motions && typeof motions.stopAllMotions === "function") motions.stopAllMotions();
+      } catch (error) {}
+      try { model.motion("Idle", 0, 3); } catch (error) {}
+    }
+    if (needDefaultHands) {
+      defaultHandPose();
+      holdDefaultHands();
+    }
+    activeHandExpression = "";
+    clipPlayedMotion = false;
+    paintHandButtons();
+  }
+
+  /** 兼容旧调用名。 */
+  function clearHand() {
+    restoreClip();
+  }
+
+  /** 所有自带 clip 统一 5 秒后恢复原样。挥手待机按剩余时间计。 */
+  function scheduleClipRestore(delay) {
+    if (clipRestoreTimer) window.clearTimeout(clipRestoreTimer);
+    const wait = Math.max(0, Number(delay) || CLIP_HOLD_MS);
+    clipRestoreTimer = window.setTimeout(() => {
+      clipRestoreTimer = 0;
+      restoreClip();
+    }, wait);
+  }
 
   function isDesktopPet() {
     return !!window.chachaDesktopPet;
@@ -289,14 +471,82 @@
     }
   }
 
-  function playClip(line) {
+  /**
+   * 播放模型自带动作/表情。
+   * options.auto：口播自动触发（会节流）。
+   * options.hold：长持，不自动 5 秒收回。
+   * 默认播放后 5 秒恢复原样。
+   */
+  function playClip(line, options) {
     const model = window.stageModel;
     if (!model || !line) return;
+    const opts = options || {};
+    const auto = !!opts.auto;
+    const hold = !!opts.hold;
+    const now = performance.now();
+    if (auto && (line.motion || line.expression)) {
+      // 自动口播：约 6 秒内不连着换 clip。
+      if (now - lastAutoClipAt < 6000 && !opts.force) return;
+      lastAutoClipAt = now;
+    }
+    let played = false;
+    const waveHold = isWaveHold(line.expression) || isWaveHold(line.motion);
     if (line.expression && typeof model.expression === "function") {
-      try { model.expression(line.expression); } catch (error) { console.warn(error); }
+      try {
+        const id = String(line.expression);
+        const mgr = expressionManager(model);
+        if (isHandClip(id)) {
+          // 手动再点同一个手部 → 立刻收回。唱歌 hold 时不走切换收回。
+          if (!auto && !hold && activeHandExpression === id) {
+            restoreClip(true);
+            return;
+          }
+          // 3* 手部一次只能一个：先清再挂。
+          if (mgr && typeof mgr.resetExpression === "function") mgr.resetExpression();
+          model.expression(id);
+          activeHandExpression = id;
+          paintHandButtons();
+        } else {
+          // 非手部表情也会盖掉当前表情层（含手部）。
+          if (mgr && typeof mgr.resetExpression === "function") mgr.resetExpression();
+          model.expression(id);
+          activeHandExpression = "";
+          paintHandButtons();
+        }
+        played = true;
+      } catch (error) { console.warn(error); }
     }
     if (line.motion && typeof model.motion === "function") {
-      try { model.motion(line.motion, 0, 3); } catch (error) { console.warn(error); }
+      try {
+        const motionId = String(line.motion);
+        if (isHandClip(motionId) && activeHandExpression) {
+          // 手部动作与手部表情互斥。
+          const mgr = expressionManager(model);
+          if (mgr && typeof mgr.resetExpression === "function") mgr.resetExpression();
+          activeHandExpression = "";
+          paintHandButtons();
+        }
+        model.motion(motionId, 0, 3);
+        // Idle 本身就是原样，不必再排恢复回 Idle。挥手待机也要在 5 秒后收回。
+        if (motionId !== "Idle" && motionId.toLowerCase() !== "idle") {
+          clipPlayedMotion = true;
+          played = true;
+        }
+      } catch (error) { console.warn(error); }
+    }
+    if (played) {
+      // 新动作开始时，停掉上一轮压手，避免和当前姿势打架。
+      clearHandHold();
+      if (hold) {
+        if (clipRestoreTimer) {
+          window.clearTimeout(clipRestoreTimer);
+          clipRestoreTimer = 0;
+        }
+        waveHoldUntil = 0;
+      } else {
+        if (waveHold) waveHoldUntil = performance.now() + CLIP_HOLD_MS;
+        scheduleClipRestore(waveHold ? CLIP_HOLD_MS : undefined);
+      }
     }
   }
 
@@ -313,12 +563,36 @@
     const faces = $("clips-faces");
     motions.textContent = "";
     faces.textContent = "";
+    if (clipRestoreTimer) {
+      window.clearTimeout(clipRestoreTimer);
+      clipRestoreTimer = 0;
+    }
+    activeHandExpression = "";
+    clipPlayedMotion = false;
+    waveHoldUntil = 0;
+    clearHandHold();
     (catalog.motions || []).forEach((item) => {
-      motions.appendChild(button(item.label || item.id, () => playClip({ motion: item.id })));
+      const id = item.id;
+      const el = button(item.label || id, () => playClip({ motion: id }));
+      // 悬停显示实际用途（来自模型 clips.meta.json）。
+      if (item.use) el.title = item.use;
+      if (isHandClip(id)) {
+        el.dataset.hand = "1";
+        el.dataset.clipId = id;
+      }
+      motions.appendChild(el);
     });
     (catalog.expressions || []).forEach((item) => {
-      faces.appendChild(button(item.label || item.id, () => playClip({ expression: item.id })));
+      const id = item.id;
+      const el = button(item.label || id, () => playClip({ expression: id }));
+      if (item.use) el.title = item.use;
+      if (isHandClip(id)) {
+        el.dataset.hand = "1";
+        el.dataset.clipId = id;
+      }
+      faces.appendChild(el);
     });
+    paintHandButtons();
     const swatches = $("bg-swatches");
     swatches.textContent = "";
     (catalog.backdropPresets || []).forEach((item) => {
@@ -608,28 +882,6 @@
         button.disabled = false;
       }
     });
-    $("btn-live-key").addEventListener("click", async () => {
-      const key = $("live-key").value.trim();
-      const button = $("btn-live-key");
-      button.disabled = true;
-      try {
-        const data = await (await fetch("/api/bili", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key: key }),
-        })).json();
-        if (data.error) throw new Error(data.error);
-        $("live-key").value = "";
-        const ready = data.danmaku && data.danmaku.configured;
-        $("live-key-hint").textContent = ready
-          ? "身份码已写在本机。页面上看不到它。"
-          : "本机的直播身份码已清掉。";
-      } catch (error) {
-        $("live-key-hint").textContent = error.message || "身份码没有保存";
-      } finally {
-        button.disabled = false;
-      }
-    });
     const stage = $("stage");
     const tabs = $("live-tabs");
     if (tabs) {
@@ -730,9 +982,14 @@
     controls: FREEDOM_CONTROLS.map((item) => item.id),
   };
   window.stageClips = {
-    play: playClip,
+    play(line, options) { playClip(line, options); },
     motion(id) { playClip({ motion: id }); },
     expression(id) { playClip({ expression: id }); },
+    clearHand,
+    restoreClip,
+    isHandClip,
+    hand() { return activeHandExpression; },
+    holdMs: CLIP_HOLD_MS,
   };
 
   bind();

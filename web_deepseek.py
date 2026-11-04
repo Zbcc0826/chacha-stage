@@ -160,8 +160,9 @@ def _prompt(user_text, history, lang):
         spoken += "\n请使用语言：" + {"zh": "中文", "ja": "日语", "en": "英语"}[lang]
     lines.append("用户：" + spoken[:2000])
     lines.append("只输出 JSON。")
+    # 人设 + 舞台契约较长，给足长度以免截断性格说明。
     text = "\n".join(lines)
-    return text[:6000]
+    return text[:16000]
 
 
 def _focus_composer(page):
